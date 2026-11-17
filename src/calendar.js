@@ -118,16 +118,31 @@ export async function handleCalendar(request, env, ctx) {
   const cals = settings.calendars || [];
   if (!cals.length) return json({ events: [], calendars: [], errors: [] });
 
-  const key = new Request("https://cache.family-board/cal/" + encodeURIComponent(cals.map((c) => c.url + c.colour).join("|")));
+  // Optional ?from=YYYY-MM-DD&to=YYYY-MM-DD (the month view), otherwise yesterday to three weeks ahead.
+  const q = new URL(request.url).searchParams;
+  const isoOk = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v || "") && !isNaN(Date.parse(v + "T00:00:00Z"));
+  let range = "";
+  let from = new Date(Date.now() - 24 * 3600e3);
+  let to = new Date(Date.now() + DAYS_AHEAD * 24 * 3600e3);
+  if (isoOk(q.get("from")) && isoOk(q.get("to"))) {
+    const f = new Date(q.get("from") + "T00:00:00Z"), t = new Date(q.get("to") + "T00:00:00Z");
+    const span = (t - f) / 864e5;
+    const farOff = Math.abs(f - Date.now()) / 864e5;
+    if (span < 0 || span > 70 || farOff > 800) return json({ error: "Pick a range of up to ten weeks." }, 400);
+    // A day either side so events in other time zones aren't cut off
+    from = new Date(f.getTime() - 864e5);
+    to = new Date(t.getTime() + 2 * 864e5);
+    range = q.get("from") + "_" + q.get("to");
+  }
+
+  const key = new Request("https://cache.family-board/cal/" + encodeURIComponent(cals.map((c) => c.url + c.colour).join("|")) + "/" + range);
   const cache = caches.default;
-  const fresh = new URL(request.url).searchParams.has("fresh");
+  const fresh = q.has("fresh");
   if (!fresh) {
     const hit = await cache.match(key);
     if (hit) return new Response(hit.body, { headers: { "content-type": "application/json", "cache-control": "no-store" } });
   }
 
-  const from = new Date(Date.now() - 24 * 3600e3);
-  const to = new Date(Date.now() + DAYS_AHEAD * 24 * 3600e3);
   const results = await Promise.allSettled(cals.map(async (c) => eventsFromIcs(await fetchIcs(c.url), c, from, to, settings.tz)));
   const events = [];
   const errors = [];

@@ -248,13 +248,14 @@ function tickClock() {
 }
 
 /* Calendar column */
-function eventsByDay(days = 8) {
-  const colours = Object.fromEntries((CAL.calendars || []).map((c) => [c.id, c.colour]));
-  const today = isoDay(new Date());
+function eventsByDay(days = 8) { return groupEvents(CAL, isoDay(new Date()), days); }
+// Sorts a calendar feed into days, starting at startIso.
+function groupEvents(src, startIso, days) {
+  const colours = Object.fromEntries((src.calendars || []).map((c) => [c.id, c.colour]));
   const groups = [];
-  for (let i = 0; i < days; i++) groups.push({ iso: addDaysIso(today, i), items: [] });
+  for (let i = 0; i < days; i++) groups.push({ iso: addDaysIso(startIso, i), items: [] });
   const byIso = Object.fromEntries(groups.map((g) => [g.iso, g]));
-  for (const ev of CAL.events || []) {
+  for (const ev of src.events || []) {
     const c = colours[ev.cal];
     if (ev.allDay) {
       // Show multi-day events on every day they cover
@@ -304,10 +305,10 @@ function renderCalendar() {
         return `<div class="${cls}" style="--c:${esc(ev.c || "#85998F")}"><div class="when">${when}</div>
           <div class="what">${esc(ev.title)}${ev.location ? `<span class="where">${esc(ev.location.split("\n")[0])}</span>` : ""}</div></div>`;
       }).join("");
-      return `<div class="day-group ${i === 0 ? "today" : ""}"><h3>${dayLabel(g.iso, i)}</h3>${items || `<div class="empty">Nothing on today</div>`}</div>`;
+      return `<div class="day-group ${i === 0 ? "today" : ""}"><h3><button data-act="month" data-day="${g.iso}">${dayLabel(g.iso, i)}</button></h3>${items || `<div class="empty">Nothing on today</div>`}</div>`;
     }).join("");
   }
-  col.innerHTML = `<div class="col-head"><h2>Calendar</h2></div><div class="scroll">${body}</div>`;
+  col.innerHTML = `<div class="col-head"><h2>Calendar</h2>${hasCals ? `<button class="pill-btn quiet" data-act="month">${I.cal} Month</button>` : ""}</div><div class="scroll">${body}</div>`;
   col.classList.toggle("active", tab === "today");
 }
 
@@ -404,6 +405,175 @@ function renderTabs() {
   nav.innerHTML = t("today", "Calendar", I.cal) + t("chores", "Chores", I.star, pend) + t("todo", "To do", I.list, open);
 }
 
+/* ---------------- Month view ---------------- */
+let monthAt = null;          // first day of the month on screen (YYYY-MM-DD)
+let monthSel = null;         // the day whose events show in the side list
+const monthCache = {};       // "from_to" -> { at, data }
+const ARROW_L = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>';
+const ARROW_R = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg>';
+
+const firstOfMonth = (iso) => iso.slice(0, 8) + "01";
+function shiftMonth(iso, n) { const d = new Date(iso + "T12:00"); d.setDate(1); d.setMonth(d.getMonth() + n); return isoDay(d); }
+function monthGrid(first) {
+  const d = new Date(first + "T12:00");
+  const lead = (d.getDay() + 6) % 7;                       // Monday first
+  const daysIn = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  const weeks = Math.ceil((lead + daysIn) / 7);
+  const start = addDaysIso(first, -lead);
+  return { start, weeks, days: weeks * 7, end: addDaysIso(start, weeks * 7 - 1) };
+}
+async function loadMonth(first, force = false) {
+  const g = monthGrid(first);
+  const key = g.start + "_" + g.end;
+  const hit = monthCache[key];
+  if (hit && !force && Date.now() - hit.at < 10 * 60e3) return hit.data;
+  const data = await api(`/api/calendar?from=${g.start}&to=${g.end}`);
+  monthCache[key] = { at: Date.now(), data };
+  return data;
+}
+function cachedMonth(first) {
+  const g = monthGrid(first);
+  return monthCache[g.start + "_" + g.end]?.data || null;
+}
+
+function openMonth(day) {
+  const today = isoDay(new Date());
+  monthSel = day || today;
+  monthAt = firstOfMonth(monthSel);
+  $(".month")?.remove();
+  const wrap = document.createElement("div");
+  wrap.className = "month";
+  wrap.setAttribute("role", "dialog");
+  wrap.setAttribute("aria-label", "Month view");
+  document.body.appendChild(wrap);
+  // swipe left and right to change month
+  let sx = null, sy = null;
+  wrap.addEventListener("pointerdown", (e) => { sx = e.clientX; sy = e.clientY; });
+  wrap.addEventListener("pointerup", (e) => {
+    if (sx === null) return;
+    const dx = e.clientX - sx, dy = e.clientY - sy;
+    sx = null;
+    if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.5) { wrap.dataset.swiped = "1"; goMonth(dx < 0 ? 1 : -1); setTimeout(() => delete wrap.dataset.swiped, 50); }
+  });
+  showMonth();
+}
+function closeMonth() { $(".month")?.remove(); }
+function goMonth(n) {
+  monthAt = shiftMonth(monthAt, n);
+  const today = isoDay(new Date());
+  monthSel = firstOfMonth(today) === monthAt ? today : monthAt;
+  showMonth();
+}
+async function showMonth() {
+  const at = monthAt;
+  renderMonth(cachedMonth(at));
+  try {
+    const data = await loadMonth(at);
+    if (monthAt === at) renderMonth(data);
+    loadMonth(shiftMonth(at, 1)).catch(() => {});   // have next month ready for a swipe
+  } catch (e) {
+    if (monthAt === at) renderMonth({ events: [], calendars: [], errors: [{ name: "Calendar", error: e.message }] });
+  }
+}
+
+function monthEventRow(ev) {
+  const when = ev.allDay ? `All<small>day</small>` : `${timeText(ev.s).t}<small>${timeText(ev.s).ap}</small>`;
+  return `<div class="event" style="--c:${esc(ev.c || "#85998F")}"><div class="when">${when}</div>
+    <div class="what">${esc(ev.title)}${ev.location ? `<span class="where">${esc(ev.location.split("\n")[0])}</span>` : ""}</div></div>`;
+}
+
+function renderMonth(data) {
+  const wrap = $(".month");
+  if (!wrap) return;
+  const g = monthGrid(monthAt);
+  const today = isoDay(new Date());
+  const month = monthAt.slice(0, 7);
+  const days = data ? groupEvents(data, g.start, g.days) : Array.from({ length: g.days }, (_, i) => ({ iso: addDaysIso(g.start, i), items: [] }));
+  const title = new Date(monthAt + "T12:00").toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+  const MAX = 6;   // fitMonthCells() hides whatever doesn't fit and counts it
+  const cells = days.map((d) => {
+    const cls = ["m-cell"];
+    if (d.iso.slice(0, 7) !== month) cls.push("out");
+    if (d.iso < today) cls.push("past");
+    if (d.iso === today) cls.push("today");
+    if (d.iso === monthSel) cls.push("sel");
+    const chips = d.items.slice(0, MAX).map((ev) =>
+      `<span class="m-ev ${ev.allDay ? "all" : ""}" style="--c:${esc(ev.c || "#85998F")}">${esc(ev.title)}</span>`).join("");
+    const more = d.items.length ? `<span class="m-more" data-total="${d.items.length}">+0 more</span>` : "";
+    const dots = d.items.slice(0, 4).map((ev) => `<i style="--c:${esc(ev.c || "#85998F")}"></i>`).join("");
+    const label = new Date(d.iso + "T12:00").toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" }) + (d.items.length ? `, ${d.items.length} event${d.items.length > 1 ? "s" : ""}` : ", nothing on");
+    return `<button class="${cls.join(" ")}" data-m="day" data-day="${d.iso}" aria-label="${esc(label)}" aria-pressed="${d.iso === monthSel}">
+      <span class="m-num">${+d.iso.slice(8)}</span><span class="m-evs">${chips}</span>${more}<span class="m-dots">${dots}</span></button>`;
+  }).join("");
+
+  const sel = days.find((d) => d.iso === monthSel);
+  const selLabel = monthSel === today ? "Today" : monthSel === addDaysIso(today, 1) ? "Tomorrow" : new Date(monthSel + "T12:00").toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" });
+  const list = !data ? `<div class="empty">Loading…</div>` : sel && sel.items.length ? sel.items.map(monthEventRow).join("") : `<div class="empty">Nothing on.</div>`;
+  const warn = (data?.errors || []).map((e) => `<div class="cal-warn">${esc(e.name)}: ${esc(e.error)}</div>`).join("");
+
+  wrap.innerHTML = `
+    <header class="m-head">
+      <button class="icon-btn" data-m="prev" aria-label="Previous month">${ARROW_L}</button>
+      <h2>${title}</h2>
+      <button class="icon-btn" data-m="next" aria-label="Next month">${ARROW_R}</button>
+      ${firstOfMonth(today) !== monthAt ? `<button class="pill-btn quiet" data-m="this">This month</button>` : ""}
+      <span class="m-gap"></span>
+      <button class="pill-btn" data-m="close">Back to board</button>
+    </header>
+    <div class="m-body">
+      <div class="m-grid">
+        ${warn}
+        <div class="m-dow">${DAY_NAMES.map((d) => `<span>${d}</span>`).join("")}</div>
+        <div class="m-cells" style="--weeks:${g.weeks}">${cells}</div>
+      </div>
+      <aside class="m-day" aria-live="polite"><h3>${selLabel}</h3><div class="scroll">${list}</div></aside>
+    </div>`;
+  fitMonthCells();
+}
+
+// Hide event names that don't fit in a day box and say how many more there are.
+function fitMonthCells() {
+  for (const cell of $$(".month .m-cell")) {
+    const box = $(".m-evs", cell), more = $(".m-more", cell);
+    if (!more) continue;
+    if (!box.offsetParent) { more.style.display = "none"; continue; }   // phone: dots instead
+    const fit = () => {
+      more.style.visibility = "hidden";
+      more.style.display = "";
+      for (const chip of box.children) chip.style.display = "";
+      const limit = box.getBoundingClientRect().bottom + 1;
+      let hidden = +more.dataset.total - box.children.length, over = false;
+      for (const chip of box.children) {
+        // keep events in time order: once one doesn't fit, hide the rest too
+        if (over || chip.getBoundingClientRect().bottom > limit) { over = true; chip.style.display = "none"; hidden++; }
+      }
+      return hidden;
+    };
+    let hidden = fit();
+    if (hidden > 0 && !cell.classList.contains("tight")) { cell.classList.add("tight"); hidden = fit(); }  // busy day: one line each
+    if (hidden > 0) { more.textContent = `+${hidden} more`; more.style.visibility = "visible"; }
+    else more.style.display = "none";
+  }
+}
+window.addEventListener("resize", () => { if ($(".month")) renderMonth(cachedMonth(monthAt)); });
+
+document.addEventListener("click", (e) => {
+  const wrap = $(".month");
+  if (!wrap || !wrap.contains(e.target) || wrap.dataset.swiped) return;
+  const b = e.target.closest("[data-m]");
+  if (!b) return;
+  const m = b.dataset.m;
+  if (m === "close") closeMonth();
+  if (m === "prev") goMonth(-1);
+  if (m === "next") goMonth(1);
+  if (m === "this") { monthAt = firstOfMonth(isoDay(new Date())); monthSel = isoDay(new Date()); showMonth(); }
+  if (m === "day") {
+    monthSel = b.dataset.day;
+    if (monthSel.slice(0, 7) !== monthAt.slice(0, 7)) { monthAt = firstOfMonth(monthSel); showMonth(); }
+    else renderMonth(cachedMonth(monthAt));
+  }
+});
+
 /* ---------------- Sheets ---------------- */
 function openSheet(html, { onClose } = {}) {
   const root = $("#sheet-root");
@@ -489,6 +659,7 @@ document.addEventListener("click", async (e) => {
   if (!b || !S) return;
   const a = b.dataset.act;
   if (a === "tab") { tab = b.dataset.tab; render(); return; }
+  if (a === "month") { openMonth(b.dataset.day); return; }
   if (a === "parent") { parentOn() ? (lockParent(), toast("Parent mode locked")) : askPin("Parent mode", "Ticks count straight away and you can approve chores for the next 5 minutes."); return; }
   if (a === "settings") { openSettings(b.dataset.tab); return; }
   if (a === "todo") { await act("todo.toggle", { id: b.dataset.id }); return; }
@@ -886,6 +1057,7 @@ function startIdle(preview = false) {
   if (idleOn) return;
   idleOn = true;
   lockParent();
+  closeMonth();
   $$(".sheet-back").forEach((s) => s.remove());
   const box = $("#idle");
   const night = isNight() && !preview;
