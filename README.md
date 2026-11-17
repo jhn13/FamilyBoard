@@ -8,7 +8,7 @@ An always-on kitchen display for an old iPad: the family's iCloud calendar, kids
   - `src/auth.js`: parent PIN (PBKDF2-hashed, locks for 10 minutes after 5 wrong tries) and connected devices
   - `src/calendar.js`: reads published iCloud calendar links (repeats, exceptions and time zones handled by `ical.js`), cached for 10 minutes
   - `src/photos.js`: reads an iCloud shared album with Public Website switched on, cached for 30 minutes
-- `wrangler.jsonc` is the config. The D1 database `family-board-db` is created automatically on the first deploy.
+- `wrangler.jsonc` is the config. The D1 database `familyboard-db` is created automatically on the first deploy.
 
 Every push to `main` redeploys through Cloudflare Workers Builds (deploy command `npx wrangler deploy`). Open iPads reload themselves into the new version the next time the screensaver comes on.
 
