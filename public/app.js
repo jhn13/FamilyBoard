@@ -10,7 +10,10 @@ const pad2 = (n) => String(n).padStart(2, "0");
 const isoDay = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 const addDaysIso = (iso, n) => { const d = new Date(iso + "T12:00:00"); d.setDate(d.getDate() + n); return isoDay(d); };
 const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-const COLOURS = ["#F4A7B9", "#8FCFE8", "#F4D35E", "#9BD89A", "#C3A8EA", "#F6B98A", "#F29A8E", "#E8E3D0"];
+const COLOURS = ["#F0648A", "#2E9BE6", "#F2B320", "#2DB56B", "#8C62E8", "#F5823A", "#E8534A", "#8D97A5"];
+// Colours chosen before the brighter palette, shown as their brighter versions
+const OLD_COLOURS = { "#F4A7B9": "#F0648A", "#8FCFE8": "#2E9BE6", "#F4D35E": "#F2B320", "#9BD89A": "#2DB56B", "#C3A8EA": "#8C62E8", "#F6B98A": "#F5823A", "#F29A8E": "#E8534A", "#E8E3D0": "#8D97A5" };
+const pc = (c) => OLD_COLOURS[(c || "").toUpperCase()] || c || "#8D97A5";
 const PARENT_MINUTES = 5;
 
 const I = {
@@ -100,12 +103,19 @@ async function act(action, extra = {}, { needPin = false, quiet = false } = {}) 
   }
 }
 
+function applyTheme(theme) {
+  const t = theme === "chalk" ? "chalk" : "bright";
+  document.documentElement.dataset.theme = t;
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", t === "chalk" ? "#1B302B" : "#EAF3F9");
+}
+
 function applyState(st) {
   if (!firstBuild) firstBuild = st.build;
   const j = JSON.stringify(st);
   if (j === lastJson) return;
   lastJson = j;
   S = st;
+  applyTheme(S.settings.theme);
   render();
 }
 
@@ -252,7 +262,7 @@ function tickClock() {
 function eventsByDay(days = 8) { return groupEvents(CAL, isoDay(new Date()), days); }
 // Sorts a calendar feed into days, starting at startIso.
 function groupEvents(src, startIso, days) {
-  const colours = Object.fromEntries((src.calendars || []).map((c) => [c.id, c.colour]));
+  const colours = Object.fromEntries((src.calendars || []).map((c) => [c.id, pc(c.colour)]));
   const groups = [];
   for (let i = 0; i < days; i++) groups.push({ iso: addDaysIso(startIso, i), items: [] });
   const byIso = Object.fromEntries(groups.map((g) => [g.iso, g]));
@@ -322,14 +332,14 @@ function jarSvg(k, t) {
   return `<svg class="jar" viewBox="0 0 72 84" aria-hidden="true">
     <defs>
       <clipPath id="${id}"><path d="M18 18h36v6c6 3 10 9 10 17v31a8 8 0 0 1-8 8H16a8 8 0 0 1-8-8V41c0-8 4-14 10-17z"/></clipPath>
-      <pattern id="${id}p" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="3" height="6" fill="${esc(k.colour)}" opacity=".55"/></pattern>
+      <pattern id="${id}p" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="3" height="6" fill="${esc(pc(k.colour))}" opacity=".55"/></pattern>
     </defs>
     <g clip-path="url(#${id})">
       <rect class="fill" x="0" y="${yp.toFixed(1)}" width="72" height="${(ya - yp).toFixed(1)}" fill="url(#${id}p)"/>
-      <rect class="fill" x="0" y="${ya.toFixed(1)}" width="72" height="${(bottom + 4 - ya).toFixed(1)}" fill="${esc(k.colour)}"/>
+      <rect class="fill" x="0" y="${ya.toFixed(1)}" width="72" height="${(bottom + 4 - ya).toFixed(1)}" fill="${esc(pc(k.colour))}"/>
     </g>
-    <path d="M18 18h36v6c6 3 10 9 10 17v31a8 8 0 0 1-8 8H16a8 8 0 0 1-8-8V41c0-8 4-14 10-17z" fill="none" stroke="${esc(k.colour)}" stroke-width="3" stroke-linejoin="round"/>
-    <rect x="14" y="9" width="44" height="10" rx="3" fill="none" stroke="${esc(k.colour)}" stroke-width="3"/>
+    <path d="M18 18h36v6c6 3 10 9 10 17v31a8 8 0 0 1-8 8H16a8 8 0 0 1-8-8V41c0-8 4-14 10-17z" fill="none" stroke="${esc(pc(k.colour))}" stroke-width="3" stroke-linejoin="round"/>
+    <rect x="14" y="9" width="44" height="10" rx="3" fill="none" stroke="${esc(pc(k.colour))}" stroke-width="3"/>
   </svg>`;
 }
 
@@ -361,7 +371,7 @@ function renderChores() {
       const subLines = [];
       if (t.pending) subLines.push(`${money(t.pending)} waiting for OK`);
       if (owed > 0) subLines.push(`${money(owed)} to be paid`);
-      return `<article class="kid" style="--k:${esc(k.colour)}">
+      return `<article class="kid" style="--k:${esc(pc(k.colour))}">
         <div class="kid-head">${jarSvg(k, t)}
           <div><div class="kid-name">${k.emoji ? esc(k.emoji) + " " : ""}${esc(k.name)}</div>
           <div class="kid-money" aria-label="${esc(money(t.approved))} earned this week">${money(t.approved)}</div>
@@ -386,7 +396,7 @@ function renderTodos() {
     const p = person(t.person_id);
     return `<div class="todo ${t.done ? "done" : ""}">
       <button class="box" data-act="todo" data-id="${t.id}" aria-label="${esc(t.text)}: ${t.done ? "done" : "not done"}">${t.done ? I.tick : ""}</button>
-      <div class="txt">${esc(t.text)}${p ? `<span class="who" style="--k:${esc(p.colour)}">${esc(p.name)}</span>` : ""}</div>
+      <div class="txt">${esc(t.text)}${p ? `<span class="who" style="--k:${esc(pc(p.colour))}">${esc(p.name)}</span>` : ""}</div>
       ${t.done ? `<button class="del" data-act="todo-del" data-id="${t.id}" aria-label="Remove ${esc(t.text)}">${I.x}</button>` : "<span></span>"}
     </div>`;
   }).join("");
@@ -630,7 +640,7 @@ function askPin(title, lead) {
 
 function addTodoSheet() {
   let who = "";
-  const people = S.people.map((p) => `<button class="chip" style="--k:${esc(p.colour)}" data-who="${p.id}" aria-pressed="false">${esc(p.name)}</button>`).join("");
+  const people = S.people.map((p) => `<button class="chip" style="--k:${esc(pc(p.colour))}" data-who="${p.id}" aria-pressed="false">${esc(p.name)}</button>`).join("");
   const { el, close } = openSheet(`
     <h2>Add a to-do</h2>
     <label class="field"><span>What needs doing?</span><textarea class="input" id="tt" maxlength="200" placeholder="Buy milk"></textarea></label>
@@ -749,7 +759,7 @@ const PANES = {
     const rows = S.people.map((p) => `<div class="row" data-person="${p.id}">
       <input class="input" style="width:64px;text-align:center" data-f="emoji" value="${esc(p.emoji || "")}" maxlength="8" aria-label="Emoji" placeholder="🙂">
       <input class="input grow" data-f="name" value="${esc(p.name)}" maxlength="40" aria-label="Name">
-      ${swatches(p.colour)}
+      ${swatches(pc(p.colour))}
       <label class="toggle"><input type="checkbox" data-f="kid" ${p.kid ? "checked" : ""}> Does chores</label>
       <button class="small-btn" data-x="person-save">Save</button>
       <button class="small-btn danger" data-x="person-del">Remove</button></div>`).join("");
@@ -781,7 +791,7 @@ const PANES = {
     const rows = ks.map((k) => {
       const owed = S.owed[k.id] || 0;
       const t = weekTotals(k.id);
-      return `<div class="row money-row" style="--k:${esc(k.colour)}">
+      return `<div class="row money-row" style="--k:${esc(pc(k.colour))}">
         <div class="grow"><div style="font-weight:700">${esc(k.name)}</div><div class="meta">${money(t.approved)} earned this week${t.pending ? `, ${money(t.pending)} waiting for OK` : ""}</div></div>
         <div class="big">${money(Math.max(0, owed))}</div>
         ${owed > 0 ? `<button class="pill-btn yellow" data-x="pay" data-id="${k.id}" data-amount="${owed}">Mark ${money(owed)} as paid</button>` : `<span class="meta">All paid</span>`}</div>`;
@@ -793,7 +803,7 @@ const PANES = {
   calendars() {
     const cals = SP?.calendars || [];
     const errs = Object.fromEntries((CAL.errors || []).map((e) => [e.cal, e.error]));
-    const rows = cals.map((c, i) => `<div class="row"><span class="swatch" style="--k:${esc(c.colour)}"></span>
+    const rows = cals.map((c, i) => `<div class="row"><span class="swatch" style="--k:${esc(pc(c.colour))}"></span>
       <div class="grow"><div style="font-weight:700">${esc(c.name)}</div>${errs[c.id] ? `<div class="err">${esc(errs[c.id])}</div>` : `<div class="meta">Connected</div>`}</div>
       <button class="small-btn danger" data-x="cal-del" data-i="${i}">Remove</button></div>`).join("");
     return `<h3>Calendars</h3><p class="lead">The board shows your iCloud calendars using each calendar's public share link. It checks for changes every 10 minutes.</p>
@@ -830,6 +840,9 @@ const PANES = {
     const s = SP || S.settings;
     return `<h3>Screen</h3><p class="lead">How the board behaves when nobody's using it.</p>
       <div class="form-card">
+        <div class="field"><span>Look</span><div class="chips" data-group="theme" data-single>
+          <button class="chip" data-v="bright" aria-pressed="${(s.theme || "bright") === "bright"}">Bright</button>
+          <button class="chip" data-v="chalk" aria-pressed="${s.theme === "chalk"}">Chalkboard</button></div></div>
         <label class="field"><span>Board name</span><input class="input" id="s-title" value="${esc(s.title)}" maxlength="40"></label>
         <label class="field"><span>Weather for</span><input class="input" id="s-town" value="${esc(s.location?.name || "")}" placeholder="Town or city">
           <small id="s-town-res">Type a town and press Find.</small></label>
@@ -867,7 +880,7 @@ function choreForm(c) {
     <h3 style="font-size:22px">${c ? "Edit chore" : "New chore"}</h3>
     <div class="two"><label class="field"><span>Chore</span><input class="input" data-f="title" maxlength="80" value="${esc(c?.title || "")}" placeholder="Make your bed"></label>
     <label class="field"><span>Worth (£)</span><input class="input" data-f="amount" inputmode="decimal" value="${c ? (c.amount / 100).toFixed(2) : ""}" placeholder="0.50"></label></div>
-    <div class="field"><span>Who does it</span><div class="chips" data-group="people">${ks.map((k) => `<button class="chip" style="--k:${esc(k.colour)}" data-v="${k.id}" aria-pressed="${sel.has(k.id)}">${esc(k.name)}</button>`).join("")}</div>
+    <div class="field"><span>Who does it</span><div class="chips" data-group="people">${ks.map((k) => `<button class="chip" style="--k:${esc(pc(k.colour))}" data-v="${k.id}" aria-pressed="${sel.has(k.id)}">${esc(k.name)}</button>`).join("")}</div>
       <small>Pick more than one and they each get their own tick and money.</small></div>
     <div class="field"><span>How often</span><div class="chips" data-group="repeat" data-single>
       <button class="chip" data-v="daily" aria-pressed="${rep === "daily"}">On these days</button>
@@ -894,6 +907,7 @@ document.addEventListener("click", async (e) => {
     if (g.hasAttribute("data-single")) $$(".chip", g).forEach((b) => b.setAttribute("aria-pressed", b === chip));
     else chip.setAttribute("aria-pressed", chip.getAttribute("aria-pressed") !== "true");
     if (g.dataset.group === "repeat") $("#days-field").hidden = chip.dataset.v !== "daily";
+    if (g.dataset.group === "theme") applyTheme(chip.dataset.v);
     return;
   }
 
@@ -994,7 +1008,7 @@ document.addEventListener("click", async (e) => {
       break;
     }
     case "screen-save": {
-      if (await saveSettings({ title: $("#s-title").value, idleMinutes: $("#s-idle").value, slideSeconds: $("#s-slide").value, nightStart: $("#s-ns").value, nightEnd: $("#s-ne").value, nightOff: $("#s-noff").checked })) toast("Saved");
+      if (await saveSettings({ theme: $('[data-group="theme"] .chip[aria-pressed="true"]')?.dataset.v || "bright", title: $("#s-title").value, idleMinutes: $("#s-idle").value, slideSeconds: $("#s-slide").value, nightStart: $("#s-ns").value, nightEnd: $("#s-ne").value, nightOff: $("#s-noff").checked })) toast("Saved");
       break;
     }
     case "pin-save": {
@@ -1047,7 +1061,10 @@ function nextEvent() {
 function renderIdleInfo() {
   const box = $("#idle");
   const c = clockParts();
-  const wx = WX?.current ? `<div class="idle-wx">${wxIcon(WX.current.weather_code, WX.current.is_day)}<span class="num">${Math.round(WX.current.temperature_2m)}°</span></div>` : "";
+  const hi = WX?.daily?.temperature_2m_max?.[0], lo = WX?.daily?.temperature_2m_min?.[0];
+  const place = S?.settings?.location?.name || "";
+  const wx = WX?.current ? `<div class="idle-wx">${wxIcon(WX.current.weather_code, WX.current.is_day)}<span class="num">${Math.round(WX.current.temperature_2m)}°</span></div>
+    <div class="idle-wx-sub">${esc(place)}${hi != null ? `${place ? ", " : ""}high ${Math.round(hi)}°, low ${Math.round(lo)}°` : ""}</div>` : "";
   const n = nextEvent();
   const next = n ? `<div class="idle-next"><b>Next</b>${esc(n.day)}${timeText(n.ev.s).t}${timeText(n.ev.s).ap} ${esc(n.ev.title)}</div>` : "";
   let info = $(".idle-info", box);

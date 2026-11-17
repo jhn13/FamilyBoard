@@ -2,6 +2,7 @@
 
 export const DEFAULT_SETTINGS = {
   title: "Our board",
+  theme: "bright",      // "bright" (daylight) or "chalk" (dark chalkboard)
   tz: "Europe/London",
   location: { name: "Leeds", lat: 53.7997, lon: -1.5492 },
   calendars: [],        // [{ id, name, url, colour }]

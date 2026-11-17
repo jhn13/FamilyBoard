@@ -2,9 +2,9 @@
 import { json, id, nowIso, getSettings, setMeta, localDay, addDays, DEFAULT_SETTINGS } from "./db.js";
 import { checkPin, setPin, validPin } from "./auth.js";
 
-export const BUILD = "2026-11-17.3";
+export const BUILD = "2026-11-17.4";
 
-const COLOURS = ["#F4A7B9", "#8FCFE8", "#F4D35E", "#9BD89A", "#C3A8EA", "#F6B98A"];
+const COLOURS = ["#F0648A", "#2E9BE6", "#F2B320", "#2DB56B", "#8C62E8", "#F5823A"];
 const str = (v, max = 120) => (typeof v === "string" ? v.trim().slice(0, max) : "");
 const pence = (v) => {
   const n = Math.round(Number(v));
@@ -191,6 +191,7 @@ export async function handleDo(request, env) {
     case "settings.save": {
       const s = b.settings || {};
       const next = { ...settings };
+      if ("theme" in s) next.theme = s.theme === "chalk" ? "chalk" : "bright";
       if ("title" in s) next.title = str(s.title, 40) || DEFAULT_SETTINGS.title;
       if (s.location && Number.isFinite(+s.location.lat) && Number.isFinite(+s.location.lon)) {
         next.location = { name: str(s.location.name, 60), lat: +(+s.location.lat).toFixed(4), lon: +(+s.location.lon).toFixed(4) };
