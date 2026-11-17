@@ -1,0 +1,12 @@
+{
+  "name": "family-board",
+  "scripts": {},
+  "dependencies": {
+    "ical.js": "^2.2.1"
+  },
+  "devDependencies": {
+    "wrangler": "^4.163.0"
+  },
+  "type": "module",
+  "private": true
+}

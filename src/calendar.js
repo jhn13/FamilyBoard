@@ -1,0 +1,149 @@
+// GET /api/calendar: events for the next three weeks from each published iCloud calendar link.
+import ICAL from "ical.js";
+import { json, getSettings } from "./db.js";
+
+const DAYS_AHEAD = 21;
+const CACHE_SECONDS = 600;
+
+// Used when a feed refers to Europe/London without including its definition.
+const LONDON_TZ = `BEGIN:VCALENDAR
+BEGIN:VTIMEZONE
+TZID:Europe/London
+BEGIN:DAYLIGHT
+TZOFFSETFROM:+0000
+TZOFFSETTO:+0100
+TZNAME:BST
+DTSTART:19810329T010000
+RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU
+END:DAYLIGHT
+BEGIN:STANDARD
+TZOFFSETFROM:+0100
+TZOFFSETTO:+0000
+TZNAME:GMT
+DTSTART:19961027T020000
+RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU
+END:STANDARD
+END:VTIMEZONE
+END:VCALENDAR`;
+
+let londonRegistered = false;
+function registerLondon() {
+  if (londonRegistered) return;
+  const comp = new ICAL.Component(ICAL.parse(LONDON_TZ));
+  ICAL.TimezoneService.register(comp.getFirstSubcomponent("vtimezone"));
+  londonRegistered = true;
+}
+
+const dateOnly = (t) => `${t.year}-${String(t.month).padStart(2, "0")}-${String(t.day).padStart(2, "0")}`;
+
+function toOut(start, end, ev, cal, tz) {
+  const allDay = start.isDate;
+  // Floating times (no zone) are treated as the family's own time zone.
+  const fix = (t) => {
+    if (!t.isDate && t.zone === ICAL.Timezone.localTimezone) {
+      const z = ICAL.TimezoneService.get(tz);
+      if (z) t = ICAL.Time.fromData({ year: t.year, month: t.month, day: t.day, hour: t.hour, minute: t.minute, second: t.second }, z);
+    }
+    return t;
+  };
+  return {
+    cal: cal.id,
+    title: ev.summary || "Busy",
+    location: ev.location || "",
+    allDay,
+    start: allDay ? dateOnly(start) : fix(start).toJSDate().toISOString(),
+    end: end ? (allDay ? dateOnly(end) : fix(end).toJSDate().toISOString()) : null,
+  };
+}
+
+export function eventsFromIcs(text, cal, from, to, tz = "Europe/London") {
+  registerLondon();
+  const root = new ICAL.Component(ICAL.parse(text));
+  for (const vtz of root.getAllSubcomponents("vtimezone")) {
+    try { ICAL.TimezoneService.register(vtz); } catch {}
+  }
+  const rangeStart = ICAL.Time.fromJSDate(from, true);
+  const rangeEnd = ICAL.Time.fromJSDate(to, true);
+  const all = root.getAllSubcomponents("vevent").map((v) => new ICAL.Event(v));
+  const masters = new Map();
+  const loose = [];
+  for (const ev of all) {
+    if (!ev.isRecurrenceException()) masters.set(ev.uid, ev);
+  }
+  for (const ev of all) {
+    if (ev.isRecurrenceException()) {
+      const m = masters.get(ev.uid);
+      if (m) m.relateException(ev);
+      else loose.push(ev);
+    }
+  }
+  const out = [];
+  const overlaps = (s, e) => {
+    const end = e || s;
+    return s.compare(rangeEnd) < 0 && (end.compare(rangeStart) > 0 || (s.isDate && s.compare(rangeStart) >= 0));
+  };
+  for (const ev of [...masters.values(), ...loose]) {
+    try {
+      if ((ev.component.getFirstPropertyValue("status") || "").toUpperCase() === "CANCELLED") continue;
+      if (!ev.isRecurring()) {
+        if (overlaps(ev.startDate, ev.endDate)) out.push(toOut(ev.startDate, ev.endDate, ev, cal, tz));
+        continue;
+      }
+      const it = ev.iterator();
+      let next, guard = 0;
+      while ((next = it.next()) && guard++ < 5000) {
+        if (next.compare(rangeEnd) >= 0) break;
+        const d = ev.getOccurrenceDetails(next);
+        if ((d.item.component.getFirstPropertyValue("status") || "").toUpperCase() === "CANCELLED") continue;
+        if (overlaps(d.startDate, d.endDate)) out.push(toOut(d.startDate, d.endDate, d.item, cal, tz));
+      }
+    } catch {
+      // Skip a single malformed event rather than losing the whole calendar.
+    }
+  }
+  return out;
+}
+
+async function fetchIcs(url) {
+  const res = await fetch(url.replace(/^webcal:\/\//i, "https://"), {
+    headers: { "user-agent": "Mozilla/5.0 (Family board)", accept: "text/calendar, */*" },
+    cf: { cacheTtl: 300 },
+  });
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  return await res.text();
+}
+
+export async function handleCalendar(request, env, ctx) {
+  const settings = await getSettings(env.DB);
+  const cals = settings.calendars || [];
+  if (!cals.length) return json({ events: [], calendars: [], errors: [] });
+
+  const key = new Request("https://cache.family-board/cal/" + encodeURIComponent(cals.map((c) => c.url + c.colour).join("|")));
+  const cache = caches.default;
+  const fresh = new URL(request.url).searchParams.has("fresh");
+  if (!fresh) {
+    const hit = await cache.match(key);
+    if (hit) return new Response(hit.body, { headers: { "content-type": "application/json", "cache-control": "no-store" } });
+  }
+
+  const from = new Date(Date.now() - 24 * 3600e3);
+  const to = new Date(Date.now() + DAYS_AHEAD * 24 * 3600e3);
+  const results = await Promise.allSettled(cals.map(async (c) => eventsFromIcs(await fetchIcs(c.url), c, from, to, settings.tz)));
+  const events = [];
+  const errors = [];
+  results.forEach((r, i) => {
+    if (r.status === "fulfilled") events.push(...r.value);
+    else errors.push({ cal: cals[i].id, name: cals[i].name, error: "Couldn't load this calendar. Check its share link is still switched on." });
+  });
+  events.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.allDay ? -1 : 1));
+  const body = JSON.stringify({
+    events,
+    calendars: cals.map(({ id, name, colour }) => ({ id, name, colour })),
+    errors,
+    fetched: new Date().toISOString(),
+  });
+  if (!errors.length) {
+    ctx.waitUntil(cache.put(key, new Response(body, { headers: { "content-type": "application/json", "cache-control": `max-age=${CACHE_SECONDS}` } })));
+  }
+  return new Response(body, { headers: { "content-type": "application/json", "cache-control": "no-store" } });
+}
