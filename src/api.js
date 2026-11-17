@@ -2,7 +2,7 @@
 import { json, id, nowIso, getSettings, setMeta, localDay, addDays, DEFAULT_SETTINGS } from "./db.js";
 import { checkPin, setPin, validPin } from "./auth.js";
 
-export const BUILD = "2026-11-17.2";
+export const BUILD = "2026-11-17.3";
 
 const COLOURS = ["#F4A7B9", "#8FCFE8", "#F4D35E", "#9BD89A", "#C3A8EA", "#F6B98A"];
 const str = (v, max = 120) => (typeof v === "string" ? v.trim().slice(0, max) : "");

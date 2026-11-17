@@ -59,6 +59,7 @@ let idleOn = false;
 let tab = "today";
 let settingsTab = "family";
 let justTicked = null;
+let PIN_LEN = null;           // length of the parent PIN, so the pad can check it without an OK button
 
 /* ---------------- Server calls ---------------- */
 async function api(path, body) {
@@ -588,20 +589,24 @@ function openSheet(html, { onClose } = {}) {
 
 function askPin(title, lead) {
   return new Promise((resolve) => {
-    let val = "";
+    let val = "", busy = false;
+    const auto = !!PIN_LEN;
     const { el, close } = openSheet(`
       <h2>${esc(title)}</h2><p class="lead">${esc(lead)}</p>
       <div class="pin-dots" id="dots"></div><p class="err" id="perr" style="text-align:center"></p>
       <div class="pad">${[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `<button data-k="${n}">${n}</button>`).join("")}
-        <button class="txt" data-k="cancel">Cancel</button><button data-k="0">0</button><button class="ok" data-k="ok">OK</button></div>`,
+        <button class="txt" data-k="cancel">Cancel</button><button data-k="0">0</button>
+        ${auto ? `<button class="txt" data-k="del">Delete</button>` : `<button class="ok" data-k="ok">OK</button>`}</div>`,
       { onClose: (v) => resolve(v) });
     const dots = $("#dots", el);
-    const draw = () => { dots.innerHTML = Array.from({ length: Math.max(4, val.length) }, (_, i) => `<i class="${i < val.length ? "f" : ""}"></i>`).join(""); };
+    const draw = () => { dots.innerHTML = Array.from({ length: PIN_LEN || Math.max(4, val.length) }, (_, i) => `<i class="${i < val.length ? "f" : ""}"></i>`).join(""); };
     draw();
     const submit = async () => {
-      if (val.length < 4) return;
+      if (val.length < 4 || busy) return;
+      busy = true;
       try {
         await api("/api/do", { action: "pin.check", pin: val });
+        PIN_LEN = val.length;
         setParent(val);
         close(true);
       } catch (e) {
@@ -609,13 +614,16 @@ function askPin(title, lead) {
         dots.classList.remove("shake"); void dots.offsetWidth; dots.classList.add("shake");
         val = ""; draw();
       }
+      busy = false;
     };
     el.addEventListener("click", (e) => {
       const k = e.target.closest("[data-k]")?.dataset.k;
-      if (!k) return;
+      if (!k || busy) return;
       if (k === "cancel") return close(false);
       if (k === "ok") return submit();
-      if (val.length < 8) { val += k; draw(); }
+      if (k === "del") { val = val.slice(0, -1); draw(); return; }
+      if (val.length < (PIN_LEN || 8)) { val += k; draw(); }
+      if (auto && val.length === PIN_LEN) submit();
     });
   });
 }
@@ -993,7 +1001,7 @@ document.addEventListener("click", async (e) => {
       const a = $("#p1").value, b = $("#p2").value;
       if (!/^\d{4,8}$/.test(a)) { $("#perr2").textContent = "Use 4 to 8 digits."; return; }
       if (a !== b) { $("#perr2").textContent = "The two PINs don't match."; return; }
-      if (await act("pin.change", { newPin: a })) { setParent(a); toast("PIN changed"); $("#p1").value = $("#p2").value = ""; }
+      if (await act("pin.change", { newPin: a })) { PIN_LEN = a.length; setParent(a); toast("PIN changed"); $("#p1").value = $("#p2").value = ""; }
       break;
     }
     case "devices-forget":
@@ -1154,27 +1162,34 @@ function showGate(setUp = true) {
   gateShown = true;
   const app = $("#app");
   const title = setUp ? "Connect this device" : "Set up your family board";
-  const lead = setUp ? "Enter the parent PIN once and this phone or iPad stays connected to the board." : "Choose a parent PIN. You'll use it to connect phones, approve chores and change settings.";
+  const lead = setUp ? "Enter the parent PIN once and this phone or iPad stays connected to the board." : "Choose a 4-digit parent PIN. You'll use it to connect phones, approve chores and change settings.";
+  // A new board always gets a 4-digit PIN; an existing one checks as soon as its PIN length is reached.
+  const target = setUp ? PIN_LEN : 4;
   app.innerHTML = `<div class="gate"><h1>${title}</h1><p>${lead}</p><div class="pin-dots" id="gdots"></div><p class="err" id="gerr"></p>
-    <div class="pad">${[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `<button data-g="${n}">${n}</button>`).join("")}<button class="txt" data-g="del">Delete</button><button data-g="0">0</button><button class="ok" data-g="ok">${setUp ? "Connect" : "Next"}</button></div></div>`;
-  let val = "", first = null;
+    <div class="pad">${[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `<button data-g="${n}">${n}</button>`).join("")}<button class="txt" data-g="del">Delete</button><button data-g="0">0</button>${target ? "<span></span>" : `<button class="ok" data-g="ok">Connect</button>`}</div></div>`;
+  let val = "", first = null, busy = false;
   const dots = $("#gdots"), err = $("#gerr");
-  const draw = () => { dots.innerHTML = Array.from({ length: Math.max(4, val.length) }, (_, i) => `<i class="${i < val.length ? "f" : ""}"></i>`).join(""); };
+  const draw = () => { dots.innerHTML = Array.from({ length: target || Math.max(4, val.length) }, (_, i) => `<i class="${i < val.length ? "f" : ""}"></i>`).join(""); };
   draw();
   const shake = (m) => { err.textContent = m; dots.classList.remove("shake"); void dots.offsetWidth; dots.classList.add("shake"); val = ""; draw(); };
   app.onclick = async (e) => {
     const k = e.target.closest("[data-g]")?.dataset.g;
-    if (!k) return;
+    if (!k || busy) return;
     if (k === "del") { val = val.slice(0, -1); draw(); return; }
-    if (k !== "ok") { if (val.length < 8) { val += k; draw(); } return; }
+    if (k !== "ok") {
+      if (val.length < (target || 8)) { val += k; draw(); }
+      if (!target || val.length < target) return;
+    }
     if (val.length < 4) return shake("Use at least 4 digits.");
     const device = /iPad/.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.userAgent)) ? "iPad" : /iPhone/.test(navigator.userAgent) ? "iPhone" : "Browser";
+    busy = true;
     try {
-      if (setUp) await api("/api/pair", { pin: val, device });
+      if (setUp) { await api("/api/pair", { pin: val, device }); PIN_LEN = val.length; }
       else {
-        if (!first) { first = val; val = ""; draw(); $(".gate p").textContent = "Enter the same PIN again to check it."; err.textContent = ""; return; }
-        if (first !== val) { first = null; $(".gate p").textContent = lead; return shake("Those didn't match. Start again."); }
+        if (!first) { first = val; val = ""; draw(); $(".gate p").textContent = "Enter the same PIN again to check it."; err.textContent = ""; busy = false; return; }
+        if (first !== val) { first = null; $(".gate p").textContent = lead; busy = false; return shake("Those didn't match. Start again."); }
         await api("/api/setup", { pin: val, device });
+        PIN_LEN = val.length;
         setParent(val);
       }
       app.onclick = null;
@@ -1183,12 +1198,14 @@ function showGate(setUp = true) {
       await boot();
       if (!setUp) openSettings("family");
     } catch (ex) { shake(ex.message); }
+    busy = false;
   };
 }
 
 /* ---------------- Start ---------------- */
 async function boot() {
   const hello = await api("/api/hello");
+  PIN_LEN = hello.pinLength || null;
   if (!hello.setUp) return showGate(false);
   if (!hello.paired) return showGate(true);
   await refreshState();

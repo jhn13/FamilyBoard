@@ -1,4 +1,4 @@
-import { ensureSchema, json } from "./db.js";
+import { ensureSchema, json, getMeta } from "./db.js";
 import { deviceFor, handleGate, hasPin } from "./auth.js";
 import { state, handleDo, BUILD } from "./api.js";
 import { handleCalendar } from "./calendar.js";
@@ -16,7 +16,7 @@ export default {
 
       const device = await deviceFor(request, env.DB);
       if (path === "/api/hello") {
-        return json({ build: BUILD, setUp: await hasPin(env.DB), paired: !!device });
+        return json({ build: BUILD, setUp: await hasPin(env.DB), paired: !!device, pinLength: +(await getMeta(env.DB, "pin_len")) || null });
       }
       // Everything else is family-only: this phone or iPad must have been connected with the PIN once.
       if (!device) return json({ error: "This device isn't connected yet.", paired: false }, 401);

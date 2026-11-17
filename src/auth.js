@@ -27,6 +27,8 @@ export async function setPin(db, pin) {
   const salt = randomHex(16);
   await setMeta(db, "pin_salt", salt);
   await setMeta(db, "pin_hash", await hashPin(pin, salt));
+  // The length lets the PIN pad check the PIN as soon as the last digit is tapped.
+  await setMeta(db, "pin_len", String(pin.length));
 }
 
 // Checks the PIN, with a short lock-out after repeated wrong guesses.
@@ -42,6 +44,7 @@ export async function checkPin(db, pin) {
   const hash = await getMeta(db, "pin_hash");
   if (validPin(pin) && salt && hash && (await hashPin(pin, salt)) === hash) {
     if (fails.count) await setMeta(db, "pin_fails", JSON.stringify({ count: 0, until: 0 }));
+    if (!(await getMeta(db, "pin_len"))) await setMeta(db, "pin_len", String(pin.length));  // PINs set before this was stored
     return { ok: true };
   }
   fails.count += 1;
