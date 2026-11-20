@@ -1195,8 +1195,11 @@ const PANES = {
           <label class="field"><span>Night mode from</span><input class="input" id="s-ns" type="time" value="${s.nightStart}"></label>
           <label class="field"><span>Night mode until</span><input class="input" id="s-ne" type="time" value="${s.nightEnd}"></label>
         </div>
+        <div class="field"><span>Night sky</span><div class="chips" data-group="sky" data-single>
+          ${[["aurora", "Northern lights"], ["stars", "Stars"], ["black", "Plain black"]].map(([v, l]) => `<button class="chip" data-v="${v}" aria-pressed="${(s.nightSky || "aurora") === v}">${l}</button>`).join("")}
+          <button class="small-btn" data-x="night-preview">Preview</button></div></div>
         <label class="toggle"><input type="checkbox" id="s-noff" ${s.nightOff ? "checked" : ""}> No night mode</label>
-        <p class="meta" style="margin-top:12px">At night the board goes almost black with a dim clock, so it doesn't light up the kitchen.</p>
+        <p class="meta" style="margin-top:12px">At night the board dims to a clock over a dark night sky, so it doesn't light up the kitchen.</p>
         <div class="sheet-actions" style="justify-content:flex-start"><button class="pill-btn yellow" data-x="screen-save">Save</button></div>
       </div>`;
   },
@@ -1365,6 +1368,14 @@ document.addEventListener("click", async (e) => {
         if (r) { SP = r.state.settings; renderSettings(); toast("Signed out of iCloud"); refreshCalendar(true); }
       });
       break;
+    case "night-preview": {
+      // shows the night screen with the sky picked above, without saving; any tap wakes it
+      const pick = $('[data-group="sky"] .chip[aria-pressed="true"]')?.dataset.v || "aurora";
+      nightPreview = pick;
+      closeSettings();
+      startIdle();
+      break;
+    }
     case "cal-add": {
       const f = $("#cal-form");
       const url = $('[data-f="url"]', f).value.trim();
@@ -1409,7 +1420,7 @@ document.addEventListener("click", async (e) => {
       break;
     }
     case "screen-save": {
-      if (await saveSettings({ theme: $('[data-group="theme"] .chip[aria-pressed="true"]')?.dataset.v || "bright", title: $("#s-title").value, idleMinutes: $("#s-idle").value, slideSeconds: $("#s-slide").value, nightStart: $("#s-ns").value, nightEnd: $("#s-ne").value, nightOff: $("#s-noff").checked })) toast("Saved");
+      if (await saveSettings({ theme: $('[data-group="theme"] .chip[aria-pressed="true"]')?.dataset.v || "bright", title: $("#s-title").value, idleMinutes: $("#s-idle").value, slideSeconds: $("#s-slide").value, nightStart: $("#s-ns").value, nightEnd: $("#s-ne").value, nightOff: $("#s-noff").checked, nightSky: $('[data-group="sky"] .chip[aria-pressed="true"]')?.dataset.v || "aurora" })) toast("Saved");
       break;
     }
     case "pin-save": {
@@ -1450,7 +1461,9 @@ function confirmSheet(title, lead, yes, fn) {
 /* ---------------- Screensaver ---------------- */
 let slideTimer = null, slideIdx = 0, nightShift = 0;
 
+let nightPreview = null;   // a sky being tried out from Settings, until the next tap
 function isNight() {
+  if (nightPreview) return true;
   const s = S?.settings;
   if (!s || s.nightOff) return false;
   const m = (t) => { const [h, mm] = t.split(":").map(Number); return h * 60 + mm; };
@@ -1514,6 +1527,59 @@ function renderIdleInfo() {
   }
 }
 
+/* ---------- Night sky ---------- */
+const SKY_EDGE = "#060C22";
+let skyTimer = null;
+
+function paintEdges(colour) {
+  for (const el of [document.documentElement, document.body]) el.style.background = colour || "";
+  if (colour) document.querySelector('meta[name="theme-color"]')?.setAttribute("content", colour);
+  else applyTheme(S?.settings?.theme);
+}
+
+function buildSky(box, kind) {
+  const sky = document.createElement("div");
+  sky.className = "sky";
+  sky.setAttribute("aria-hidden", "true");
+  const rnd = (a, b) => a + Math.random() * (b - a);
+  // a few brighter stars that twinkle, mostly in the top half
+  const twinkles = Array.from({ length: 18 }, () =>
+    `<i class="tw" style="left:${rnd(3, 97).toFixed(1)}%;top:${(Math.pow(Math.random(), 1.5) * 68 + 2).toFixed(1)}%;--s:${rnd(1.6, 3.2).toFixed(1)}px;--d:${rnd(3, 8).toFixed(1)}s;--w:-${rnd(0, 8).toFixed(1)}s"></i>`).join("");
+  const aurora = kind === "aurora" ? `<div class="aurora a1"></div><div class="aurora a2"></div><div class="aurora a3"></div>` : "";
+  sky.innerHTML = `<canvas></canvas>${aurora}${twinkles}`;
+  box.prepend(sky);
+  drawStars($("canvas", sky));
+  // now and then, a shooting star
+  clearInterval(skyTimer);
+  skyTimer = setInterval(() => {
+    if (!idleOn || Math.random() > .3 || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const s = document.createElement("i");
+    s.className = "shoot";
+    s.style.left = rnd(10, 70) + "%";
+    s.style.top = rnd(4, 30) + "%";
+    s.style.setProperty("--a", rnd(14, 32).toFixed(0) + "deg");
+    sky.appendChild(s);
+    setTimeout(() => s.remove(), 2500);
+  }, 40000);
+}
+
+function drawStars(cv) {
+  const w = cv.clientWidth || innerWidth, h = cv.clientHeight || innerHeight;
+  const dpr = Math.min(2, devicePixelRatio || 1);
+  cv.width = w * dpr; cv.height = h * dpr;
+  const g = cv.getContext("2d");
+  g.scale(dpr, dpr);
+  const tints = ["255,255,255", "214,226,255", "255,236,206", "200,214,255"];
+  const n = Math.round(w * h / 2600);
+  for (let i = 0; i < n; i++) {
+    const x = Math.random() * w, y = Math.pow(Math.random(), 1.35) * h * .92;
+    const r = Math.random() < .93 ? .35 + Math.random() * .6 : 1 + Math.random() * .6;
+    const fade = 1 - (y / h) * .75;   // fewer, fainter stars towards the bottom haze
+    g.fillStyle = `rgba(${tints[i % 4]},${(.25 + Math.random() * .6) * fade})`;
+    g.beginPath(); g.arc(x, y, r, 0, 7); g.fill();
+  }
+}
+
 function startIdle(preview = false) {
   if (idleOn) return;
   idleOn = true;
@@ -1524,8 +1590,12 @@ function startIdle(preview = false) {
   const box = $("#idle");
   const night = isNight() && !preview;
   const photos = PH.photos || [];
-  box.className = night ? "night" : photos.length ? "" : "chalk";
+  const sky = nightPreview || S.settings.nightSky || "aurora";
+  box.className = night ? `night sky-${sky}` : photos.length ? "" : "chalk";
   box.innerHTML = `<div class="idle-shade"></div><div class="idle-hint">Tap to open the board</div>`;
+  if (night && sky !== "black") buildSky(box, sky);
+  // colour the strips around the page (status bar, home bar) to match the screensaver
+  paintEdges(night ? (sky === "black" ? "#000000" : SKY_EDGE) : photos.length ? "#000000" : null);
   if (!night && !photos.length) {
     const today = eventsByDay(1)[0].items.filter((e) => e.allDay || e.e > new Date()).slice(0, 4);
     if (today.length) {
@@ -1572,6 +1642,9 @@ function stopIdle() {
   if (!idleOn) return;
   idleOn = false;
   clearTimeout(slideTimer);
+  clearInterval(skyTimer);
+  nightPreview = null;
+  paintEdges(null);
   const box = $("#idle");
   box.hidden = true;
   box.innerHTML = "";

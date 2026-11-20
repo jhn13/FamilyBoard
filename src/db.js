@@ -8,6 +8,7 @@ export const DEFAULT_SETTINGS = {
   calendars: [],        // [{ id, name, url, colour }]
   album: "",            // iCloud shared album public link
   idleMinutes: 1,
+  nightSky: "aurora",
   nightStart: "22:00",
   nightEnd: "06:30",
   slideSeconds: 20,

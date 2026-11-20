@@ -3,7 +3,7 @@ import { json, id, nowIso, getSettings, getMeta, setMeta, localDay, addDays, DEF
 import { checkPin, setPin, validPin } from "./auth.js";
 import { discover, addEvent } from "./caldav.js";
 
-export const BUILD = "2026-11-20.3";
+export const BUILD = "2026-11-20.4";
 
 const COLOURS = ["#F0648A", "#2E9BE6", "#F2B320", "#2DB56B", "#8C62E8", "#F5823A"];
 const str = (v, max = 120) => (typeof v === "string" ? v.trim().slice(0, max) : "");
@@ -332,6 +332,7 @@ export async function handleDo(request, env) {
       if ("slideSeconds" in s) next.slideSeconds = Math.min(300, Math.max(5, Math.round(+s.slideSeconds) || 20));
       for (const k of ["nightStart", "nightEnd"]) if (k in s && /^([01]\d|2[0-3]):[0-5]\d$/.test(s[k] || "")) next[k] = s[k];
       if ("nightOff" in s) next.nightOff = !!s.nightOff;
+      if ("nightSky" in s) next.nightSky = ["aurora", "stars", "black"].includes(s.nightSky) ? s.nightSky : "aurora";
       await setMeta(db, "settings", JSON.stringify(next));
       break;
     }

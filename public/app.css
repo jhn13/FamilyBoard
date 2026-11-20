@@ -530,3 +530,64 @@ details.more summary { cursor: pointer; font-weight: 700; padding: 10px 0; color
 .event-sheet .chips .cal-chip[aria-pressed="true"] { background: var(--k); border-color: var(--k); color: #fff; box-shadow: 0 0 0 3px color-mix(in srgb, var(--k) 30%, transparent); }
 .pill-btn.quiet.danger-text { color: var(--red); }
 #elast .input { max-width: 16em; }
+
+/* ---------- Night sky ---------- */
+/* Deep navy with a soft haze low down; the very top and bottom match the strips iOS draws around the page. */
+#idle.night.sky-stars, #idle.night.sky-aurora {
+  --wx-bg: #060C22;
+  background:
+    radial-gradient(85% 30% at 50% 74%, rgba(46, 74, 160, .38) 0%, rgba(30, 50, 120, .16) 50%, transparent 100%),
+    radial-gradient(60% 45% at 85% 8%, rgba(70, 60, 150, .16) 0%, transparent 70%),
+    linear-gradient(180deg, #060C22 0%, #0A1638 50%, #0B1942 72%, #060C22 100%);
+}
+#idle.night.sky-stars .idle-info, #idle.night.sky-aurora .idle-info { color: #8290BC; z-index: 2; }
+#idle.night.sky-stars .idle-weather, #idle.night.sky-aurora .idle-weather { color: #6E7CA8; z-index: 2; }
+#idle.night .idle-timers { z-index: 2; }
+.sky { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.sky canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+.tw { position: absolute; width: var(--s); height: var(--s); margin: calc(var(--s) / -2); border-radius: 50%; background: #F2F5FF;
+  box-shadow: 0 0 calc(var(--s) * 3) rgba(200, 215, 255, .7); opacity: .3; animation: twinkle var(--d) ease-in-out var(--w) infinite; }
+@keyframes twinkle { 0%, 100% { opacity: .18; transform: scale(.7); } 50% { opacity: .95; transform: scale(1); } }
+
+.shoot { position: absolute; width: 160px; height: 1.5px; border-radius: 2px; transform-origin: 0 50%;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0), rgba(230, 238, 255, .9));
+  opacity: 0; animation: shoot 1.3s ease-out forwards; }
+@keyframes shoot {
+  0% { opacity: 0; transform: rotate(var(--a)) translateX(0) scaleX(.3); }
+  15% { opacity: 1; }
+  100% { opacity: 0; transform: rotate(var(--a)) translateX(380px) scaleX(1); }
+}
+
+/* Northern lights: soft curtains of green and violet that drift and breathe very slowly */
+.aurora { position: absolute; left: -25%; width: 150%; height: 52%; mix-blend-mode: screen; will-change: transform, opacity; transform-origin: 50% 100%;
+  -webkit-mask-image: radial-gradient(ellipse 48% 50% at 50% 55%, #000 0%, rgba(0, 0, 0, .55) 50%, transparent 100%);
+  mask-image: radial-gradient(ellipse 48% 50% at 50% 55%, #000 0%, rgba(0, 0, 0, .55) 50%, transparent 100%); }
+/* fine vertical rays */
+.aurora::after { content: ""; position: absolute; inset: 0;
+  background:
+    repeating-linear-gradient(90deg, rgba(6, 12, 34, .2) 0 2px, transparent 2px 19px, rgba(6, 12, 34, .12) 19px 23px, transparent 23px 41px),
+    repeating-linear-gradient(90deg, transparent 0 7px, rgba(6, 12, 34, .1) 7px 9px, transparent 9px 29px);
+  -webkit-mask-image: linear-gradient(180deg, transparent, #000 45%, #000 80%, transparent);
+  mask-image: linear-gradient(180deg, transparent, #000 45%, #000 80%, transparent); }
+.aurora.a1 { top: 0; background: linear-gradient(180deg, transparent 0%, rgba(150, 100, 235, .32) 18%, rgba(56, 232, 170, .62) 52%, rgba(40, 210, 190, .22) 74%, transparent 100%);
+  animation: aurora1 52s ease-in-out infinite alternate; }
+.aurora.a2 { top: 10%; height: 44%; background: linear-gradient(180deg, transparent 0%, rgba(60, 200, 230, .25) 25%, rgba(70, 240, 160, .48) 58%, transparent 100%);
+  animation: aurora2 67s ease-in-out -20s infinite alternate; }
+.aurora.a3 { top: -6%; height: 40%; background: linear-gradient(180deg, transparent 0%, rgba(190, 90, 220, .3) 40%, rgba(100, 120, 240, .18) 70%, transparent 100%);
+  animation: aurora3 81s ease-in-out -35s infinite alternate; }
+@keyframes aurora1 {
+  0% { transform: translateX(-7%) rotate(-9deg) skewX(-14deg) scaleY(.85); opacity: .45; }
+  50% { opacity: .8; }
+  100% { transform: translateX(6%) rotate(-3deg) skewX(10deg) scaleY(1.12); opacity: .55; }
+}
+@keyframes aurora2 {
+  0% { transform: translateX(8%) rotate(7deg) skewX(12deg) scaleY(1.05); opacity: .35; }
+  50% { opacity: .7; }
+  100% { transform: translateX(-6%) rotate(2deg) skewX(-10deg) scaleY(.8); opacity: .4; }
+}
+@keyframes aurora3 {
+  0% { transform: translateX(-3%) rotate(4deg) scaleY(.9); opacity: .25; }
+  100% { transform: translateX(5%) rotate(-5deg) scaleY(1.1); opacity: .5; }
+}
+@media (prefers-reduced-motion: reduce) { .aurora, .tw { animation: none; } .aurora { opacity: .55; } }
