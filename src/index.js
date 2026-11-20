@@ -3,6 +3,7 @@ import { deviceFor, handleGate, hasPin } from "./auth.js";
 import { state, handleDo, BUILD } from "./api.js";
 import { handleCalendar } from "./calendar.js";
 import { handlePhotos } from "./photos.js";
+import { handleVoice } from "./voice.js";
 
 export default {
   async fetch(request, env, ctx) {
@@ -13,6 +14,8 @@ export default {
     try {
       await ensureSchema(env.DB);
       if (path === "/api/setup" || path === "/api/pair") return await handleGate(request, env, path);
+      // Siri shortcuts use their own key instead of a connected device
+      if (path === "/api/voice") return await handleVoice(request, env);
 
       const device = await deviceFor(request, env.DB);
       if (path === "/api/hello") {

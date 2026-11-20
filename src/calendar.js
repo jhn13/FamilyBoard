@@ -113,6 +113,20 @@ async function fetchIcs(url) {
   return await res.text();
 }
 
+// Events from every connected calendar between two dates, sorted. Used by the board and by Siri.
+export async function loadEvents(settings, from, to) {
+  const cals = settings.calendars || [];
+  const results = await Promise.allSettled(cals.map(async (c) => eventsFromIcs(await fetchIcs(c.url), c, from, to, settings.tz)));
+  const events = [];
+  const errors = [];
+  results.forEach((r, i) => {
+    if (r.status === "fulfilled") events.push(...r.value);
+    else errors.push({ cal: cals[i].id, name: cals[i].name, error: "Couldn't load this calendar. Check its share link is still switched on." });
+  });
+  events.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.allDay ? -1 : 1));
+  return { events, errors };
+}
+
 export async function handleCalendar(request, env, ctx) {
   const settings = await getSettings(env.DB);
   const cals = settings.calendars || [];
@@ -143,14 +157,7 @@ export async function handleCalendar(request, env, ctx) {
     if (hit) return new Response(hit.body, { headers: { "content-type": "application/json", "cache-control": "no-store" } });
   }
 
-  const results = await Promise.allSettled(cals.map(async (c) => eventsFromIcs(await fetchIcs(c.url), c, from, to, settings.tz)));
-  const events = [];
-  const errors = [];
-  results.forEach((r, i) => {
-    if (r.status === "fulfilled") events.push(...r.value);
-    else errors.push({ cal: cals[i].id, name: cals[i].name, error: "Couldn't load this calendar. Check its share link is still switched on." });
-  });
-  events.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.allDay ? -1 : 1));
+  const { events, errors } = await loadEvents(settings, from, to);
   const body = JSON.stringify({
     events,
     calendars: cals.map(({ id, name, colour }) => ({ id, name, colour })),

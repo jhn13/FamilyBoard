@@ -462,6 +462,43 @@ html[data-theme="bright"] .event { background: color-mix(in srgb, var(--c, #8D97
 html[data-theme="bright"] .event.now { background: color-mix(in srgb, var(--yellow) 22%, transparent); }
 html[data-theme="bright"] #idle.chalk { background: linear-gradient(180deg, #F8FBFE 0%, #DDEBF5 100%); }
 
+/* ---------- Kitchen timers ---------- */
+.timers { display: flex; flex-wrap: wrap; gap: 10px; padding: 12px 0 0; }
+.timer-chip { display: inline-flex; align-items: center; gap: 10px; padding: 8px 8px 8px 16px; border-radius: 999px; background: var(--panel); border: 2px solid var(--yellow); font-size: 18px; }
+.timer-chip > svg { width: 24px; height: 24px; color: #C98A00; }
+.timer-chip .tl { font-weight: 700; }
+.timer-chip .tt { font-family: var(--display); font-weight: 700; font-size: 28px; line-height: 1; min-width: 3.2ch; font-variation-settings: "wdth" 85; }
+.timer-chip button { padding: 7px 12px; border-radius: 999px; font-weight: 700; font-size: 15px; background: color-mix(in srgb, var(--chalk) 7%, transparent); }
+.timer-chip button svg { width: 16px; height: 16px; display: block; }
+.timer-chip.done { background: var(--yellow); color: #1F2A44; animation: pulse 1s ease-in-out infinite; }
+@keyframes pulse { 50% { transform: scale(1.04); } }
+.preset-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.preset { padding: 14px 4px; border-radius: 14px; background: var(--panel-2); font-weight: 700; font-size: 18px; }
+.preset:active { background: var(--yellow); color: #1F2A44; }
+#ring { position: fixed; inset: 0; z-index: 95; display: grid; place-items: center; background: #FFC23D; color: #1F2A44; animation: ringflash 1.2s ease-in-out infinite; padding: 24px; }
+@keyframes ringflash { 50% { background: #FFE08A; } }
+.ring-box { text-align: center; }
+.ring-box > svg { width: 120px; height: 120px; animation: shake .5s ease-in-out infinite; }
+.ring-box h2 { font-family: var(--display); font-weight: 800; font-size: clamp(48px, 8vw, 96px); line-height: 1; margin: 16px 0 28px; font-variation-settings: "wdth" 80; }
+.ring-btns { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+.ring-btns .pill-btn { font-size: 22px; padding: 16px 28px; }
+html[data-theme] .ring-btns .pill-btn.quiet { background: rgba(255, 255, 255, .7); color: #1F2A44; border-color: transparent; }
+html[data-theme] .ring-btns .pill-btn.yellow { background: #1F2A44; color: #FFFFFF; }
+.ring-sound { margin-top: 18px; font-weight: 700; }
+.idle-timers { position: absolute; top: calc(var(--safe-t) + 28px); left: calc(var(--gap) * 2); display: flex; flex-direction: column; gap: 10px; }
+.idle-timers .it { display: inline-flex; align-items: baseline; gap: 14px; padding: 10px 20px; border-radius: 22px; background: #FFC23D; color: #1F2A44; text-shadow: none; width: max-content; }
+.idle-timers .it span { font-weight: 700; font-size: clamp(20px, 2.4vw, 30px); }
+.idle-timers .it b { font-family: var(--display); font-weight: 800; font-size: clamp(44px, 6vw, 80px); line-height: 1; font-variation-settings: "wdth" 80; }
+#idle.has-timers .idle-today { display: none; }
+#idle.night .idle-timers { top: auto; bottom: calc(var(--safe-b) + var(--gap) * 2); left: calc(var(--gap) * 2); }
+#idle.night .idle-timers .it { background: #2A2410; color: #C9A94A; }
+@media (max-width: 760px) {
+  .timers { padding-top: 8px; }
+  .timer-chip { font-size: 16px; }
+  .timer-chip .tt { font-size: 24px; }
+  .preset-grid { grid-template-columns: repeat(3, 1fr); }
+}
+
 /* Toast */
 #toast { position: fixed; left: 50%; bottom: calc(var(--safe-b) + 24px); transform: translateX(-50%); z-index: 90; background: var(--chalk); color: var(--board); padding: 12px 20px; border-radius: 999px; font-weight: 700; box-shadow: 0 10px 30px rgba(0, 0, 0, .3); max-width: calc(100% - 32px); }
 

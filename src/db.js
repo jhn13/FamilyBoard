@@ -29,6 +29,7 @@ export async function ensureSchema(db) {
       "title TEXT, amount INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'pending', created TEXT, approved TEXT, UNIQUE (chore_id, person_id, period))"
     ),
     db.prepare("CREATE TABLE IF NOT EXISTS payouts (id TEXT PRIMARY KEY, person_id TEXT NOT NULL, amount INTEGER NOT NULL, created TEXT)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS timers (id TEXT PRIMARY KEY, label TEXT, ends_at INTEGER NOT NULL, duration INTEGER NOT NULL, created TEXT, dismissed INTEGER NOT NULL DEFAULT 0)"),
     db.prepare("CREATE TABLE IF NOT EXISTS todos (id TEXT PRIMARY KEY, text TEXT NOT NULL, person_id TEXT, done INTEGER NOT NULL DEFAULT 0, created TEXT, done_at TEXT)"),
   ]);
   ready = true;

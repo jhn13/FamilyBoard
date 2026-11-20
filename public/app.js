@@ -26,6 +26,7 @@ const I = {
   x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
   cal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg>',
   star: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3.5l2.6 5.4 5.9.8-4.3 4.1 1 5.8-5.2-2.8-5.2 2.8 1-5.8-4.3-4.1 5.9-.8z"/></svg>',
+  timer: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13.5" r="7.5"/><path d="M12 9.5v4l2.5 1.5M9.5 2.5h5M18.5 6.5l1.5-1.5"/></svg>',
   list: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1.2" fill="currentColor"/><circle cx="4.5" cy="12" r="1.2" fill="currentColor"/><circle cx="4.5" cy="18" r="1.2" fill="currentColor"/></svg>',
 };
 
@@ -83,7 +84,11 @@ let idleOn = false;
 let tab = "today";
 let settingsTab = "family";
 let justTicked = null;
-let PIN_LEN = null;           // length of the parent PIN, so the pad can check it without an OK button
+let PIN_LEN = null;
+let clockOffset = 0;          // server time minus this device's time, so timers agree everywhere
+let VOICE = null;             // Siri key, only known while settings are open
+const silenced = new Set();   // timers stopped on this device, before the server confirms
+const nowMs = () => Date.now() + clockOffset;           // length of the parent PIN, so the pad can check it without an OK button
 
 /* ---------------- Server calls ---------------- */
 async function api(path, body) {
@@ -132,10 +137,12 @@ function applyTheme(theme) {
 
 function applyState(st) {
   if (!firstBuild) firstBuild = st.build;
-  const j = JSON.stringify(st);
+  const j = JSON.stringify({ ...st, serverNow: 0 });
   if (j === lastJson) return;
   lastJson = j;
   S = st;
+  if (st.serverNow) clockOffset = st.serverNow - Date.now();
+  if (st.voice !== undefined) VOICE = st.voice;
   applyTheme(S.settings.theme);
   render();
 }
@@ -224,6 +231,7 @@ function render() {
   if (!app.querySelector(".grid")) {
     app.innerHTML = `
       <header class="top" id="top"></header>
+      <div class="timers" id="timers" hidden></div>
       <main class="grid">
         <section class="col col-cal" id="col-cal" aria-label="Calendar"></section>
         <section class="col col-chores" id="col-chores" aria-label="Chores"></section>
@@ -233,6 +241,7 @@ function render() {
   }
   $(".grid").classList.toggle("many", kids().length >= 3);
   renderTop();
+  renderTimers();
   renderCalendar();
   renderChores();
   renderTodos();
@@ -268,12 +277,14 @@ function renderTop() {
     <div class="clock" id="clock">${c.hm}<span class="ampm">${c.ampm}</span></div>
     <div class="date"><div class="day" id="date">${dateLong()}</div><div class="title">${esc(S.settings.title)}</div></div>
     <div class="top-right">${wx}
+      <button class="icon-btn" data-act="timer" aria-label="Set a timer">${I.timer}</button>
       <button class="icon-btn ${parentOn() ? "on" : ""}" data-act="parent" aria-label="${parentOn() ? "Parent mode is on. Tap to lock" : "Parent mode"}">${parentOn() ? I.unlock : I.lock}</button>
       <button class="icon-btn" data-act="settings" aria-label="Settings">${I.gear}</button>
     </div>`;
 }
 
 function tickClock() {
+  tickTimers();
   const c = clockParts();
   const el = $("#clock");
   if (el) el.innerHTML = `${c.hm}<span class="ampm">${c.ampm}</span>`;
@@ -679,6 +690,119 @@ function renderWeather() {
   $(".wv-hours", wrap).scrollLeft = keepScroll;
 }
 
+/* ---------------- Kitchen timers ---------------- */
+const liveTimers = () => (S?.timers || []).filter((t) => !silenced.has(t.id));
+function fmtLeft(ms) {
+  const s = Math.max(0, Math.ceil(ms / 1000)), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return h ? `${h}:${pad2(m)}:${pad2(sec)}` : `${m}:${pad2(sec)}`;
+}
+function renderTimers() {
+  const bar = $("#timers");
+  if (!bar) return;
+  const ts = liveTimers();
+  bar.hidden = !ts.length;
+  bar.innerHTML = ts.map((t) => `<div class="timer-chip" data-timer="${t.id}">
+      ${I.timer}<span class="tl">${esc(t.label || "Timer")}</span><b class="tt num" data-left="${t.id}"></b>
+      <button data-act="timer-add" data-id="${t.id}" aria-label="Add a minute">+1 min</button>
+      <button data-act="timer-stop" data-id="${t.id}" aria-label="Cancel ${esc(t.label || "timer")}">${I.x}</button></div>`).join("");
+  tickTimers();
+}
+function tickTimers() {
+  const now = nowMs();
+  for (const t of liveTimers()) {
+    const left = t.ends_at - now;
+    $$(`[data-left="${t.id}"]`).forEach((el) => { el.textContent = left > 0 ? fmtLeft(left) : "Done"; });
+    $(`[data-timer="${t.id}"]`)?.classList.toggle("done", left <= 0);
+  }
+  const ringing = liveTimers().filter((t) => t.ends_at <= now);
+  if (ringing.length) showRing(ringing); else hideRing();
+}
+async function stopTimer(tid) {
+  silenced.add(tid);
+  renderTimers();
+  if (idleOn) renderIdleInfo();
+  await act("timer.stop", { id: tid }, { quiet: true });
+}
+
+// Alarm: full-screen message plus a chime, until someone taps Stop (on any device)
+let ringingKey = "";
+function showRing(list) {
+  let el = $("#ring");
+  const key = list.map((t) => t.id).join(",");
+  if (!el) { el = document.createElement("div"); el.id = "ring"; el.setAttribute("role", "alertdialog"); document.body.appendChild(el); }
+  if (key !== ringingKey) {
+    ringingKey = key;
+    const names = list.map((t) => (t.label ? esc(t.label) + " timer" : "Timer"));
+    el.innerHTML = `<div class="ring-box">${I.timer}<h2>${names.length > 1 ? names.join(" and ") + " are done" : names[0] + " is done"}</h2>
+      <div class="ring-btns"><button class="pill-btn quiet" data-ring="more" data-id="${list[0].id}">+1 minute</button>
+      <button class="pill-btn quiet" data-ring="more5" data-id="${list[0].id}">+5 minutes</button>
+      <button class="pill-btn yellow" data-ring="stop">Stop</button></div>
+      <p class="ring-sound" hidden>Tap anywhere to hear the alarm</p></div>`;
+    el.onclick = async (e) => {
+      unlockAudio();
+      const r = e.target.closest("[data-ring]")?.dataset.ring;
+      if (r === "stop") list.forEach((t) => stopTimer(t.id));
+      if (r === "more" || r === "more5") { await act("timer.add", { id: e.target.closest("[data-ring]").dataset.id, seconds: r === "more" ? 60 : 300 }); }
+    };
+  }
+  if (idleOn) stopIdle();
+  chime();
+}
+function hideRing() { $("#ring")?.remove(); ringingKey = ""; }
+
+let audioCtx = null, lastChime = 0;
+function unlockAudio() {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+  } catch {}
+}
+function chime() {
+  if (Date.now() - lastChime < 1600) return;
+  lastChime = Date.now();
+  const hint = $("#ring .ring-sound");
+  if (!audioCtx || audioCtx.state !== "running") { if (hint) hint.hidden = false; return; }
+  if (hint) hint.hidden = true;
+  const t0 = audioCtx.currentTime;
+  [0, 0.22, 0.44].forEach((d, i) => {
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.type = "triangle";
+    o.frequency.value = [880, 1175, 1568][i];
+    g.gain.setValueAtTime(0.0001, t0 + d);
+    g.gain.exponentialRampToValueAtTime(0.5, t0 + d + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + d + 0.2);
+    o.connect(g).connect(audioCtx.destination);
+    o.start(t0 + d); o.stop(t0 + d + 0.22);
+  });
+}
+document.addEventListener("pointerdown", unlockAudio, { passive: true });
+
+function timerSheet() {
+  const presets = [1, 2, 3, 5, 10, 12, 15, 20, 30, 45, 60, 90];
+  const labels = ["Oven", "Pasta", "Eggs", "Rice", "Bath", "Screen time", "Homework"];
+  let label = "";
+  const { el, close } = openSheet(`
+    <h2>Set a timer</h2>
+    <div class="field"><span>What's it for? (optional)</span><div class="chips" id="tlabels">${labels.map((l) => `<button class="chip" data-l="${esc(l)}" aria-pressed="false">${esc(l)}</button>`).join("")}</div></div>
+    <div class="field"><span>How long?</span><div class="preset-grid">${presets.map((m) => `<button class="preset" data-m="${m}">${m >= 60 ? (m / 60) + (m === 60 ? " hour" : " hours") : m + " min"}</button>`).join("")}</div></div>
+    <div class="two"><label class="field"><span>Or type minutes</span><input class="input" id="tmins" inputmode="decimal" placeholder="8"></label>
+    <div class="field"><span>&nbsp;</span><button class="pill-btn yellow" data-go="1" style="width:100%;justify-content:center;padding:13px">Start</button></div></div>
+    <p class="err" id="terr2"></p>`);
+  const start = async (mins) => {
+    const secs = Math.round(mins * 60);
+    if (!(secs >= 5 && secs <= 86400)) { $("#terr2", el).textContent = "Pick between a few seconds and 24 hours."; return; }
+    unlockAudio();
+    if (await act("timer.start", { seconds: secs, label })) { close(); toast(`${label || "Timer"} set`); }
+  };
+  el.addEventListener("click", (e) => {
+    const l = e.target.closest("[data-l]");
+    if (l) { label = l.getAttribute("aria-pressed") === "true" ? "" : l.dataset.l; $$("[data-l]", el).forEach((b) => b.setAttribute("aria-pressed", b === l && label !== "")); return; }
+    const m = e.target.closest("[data-m]");
+    if (m) return start(+m.dataset.m);
+    if (e.target.closest("[data-go]")) return start(parseFloat($("#tmins", el).value));
+  });
+}
+
 /* ---------------- Sheets ---------------- */
 function openSheet(html, { onClose } = {}) {
   const root = $("#sheet-root");
@@ -773,6 +897,9 @@ document.addEventListener("click", async (e) => {
   if (a === "tab") { tab = b.dataset.tab; render(); return; }
   if (a === "month") { openMonth(b.dataset.day); return; }
   if (a === "weather") { openWeather(); return; }
+  if (a === "timer") { timerSheet(); return; }
+  if (a === "timer-add") { await act("timer.add", { id: b.dataset.id, seconds: 60 }); return; }
+  if (a === "timer-stop") { stopTimer(b.dataset.id); return; }
   if (a === "parent") { parentOn() ? (lockParent(), toast("Parent mode locked")) : askPin("Parent mode", "Ticks count straight away and you can approve chores for the next 5 minutes."); return; }
   if (a === "settings") { openSettings(b.dataset.tab); return; }
   if (a === "todo") { await act("todo.toggle", { id: b.dataset.id }); return; }
@@ -823,6 +950,7 @@ async function openSettings(which) {
   const res = await act("pin.check", {}, { quiet: true });
   if (!res) return;
   SP = res.state.settings;
+  VOICE = res.state.voice || null;
   settingsTab = which || settingsTab;
   const wrap = document.createElement("div");
   wrap.className = "settings";
@@ -832,7 +960,7 @@ async function openSettings(which) {
 }
 function closeSettings() { $(".settings")?.remove(); SP = null; refreshCalendar(); }
 
-const TABS = [["family", "Family"], ["chores", "Chores"], ["money", "Pocket money"], ["calendars", "Calendars"], ["photos", "Photos"], ["screen", "Screen"], ["security", "PIN and devices"]];
+const TABS = [["family", "Family"], ["chores", "Chores"], ["money", "Pocket money"], ["calendars", "Calendars"], ["photos", "Photos"], ["screen", "Screen"], ["siri", "Siri"], ["security", "PIN and devices"]];
 
 function renderSettings() {
   const wrap = $(".settings");
@@ -952,6 +1080,26 @@ const PANES = {
         <p class="meta" style="margin-top:12px">At night the board goes almost black with a dim clock, so it doesn't light up the kitchen.</p>
         <div class="sheet-actions" style="justify-content:flex-start"><button class="pill-btn yellow" data-x="screen-save">Save</button></div>
       </div>`;
+  },
+  siri() {
+    const link = VOICE ? `${location.origin}/api/voice?key=${VOICE}&say=` : "";
+    return `<h3>Siri</h3><p class="lead">Say "Hey Siri, Board" on the iPad or either of your phones, then ask for a timer, add a to-do, or ask what's on. It works through a Siri Shortcut that sends what you say to the board.</p>
+      ${!VOICE ? `<div class="form-card"><p style="margin:0 0 12px">First, make the board's private Siri link.</p><button class="pill-btn yellow" data-x="voice-key">Make the Siri link</button></div>` : `
+      <div class="form-card">
+        <div class="field"><span>The board's Siri link</span><input class="input" id="vlink" readonly value="${esc(link)}">
+          <small>Keep this private: anyone with it can set timers and add to-dos. Make a new one any time and the old one stops working.</small></div>
+        <div class="sheet-actions" style="justify-content:flex-start"><button class="pill-btn yellow" data-x="voice-copy">Copy link</button><button class="pill-btn quiet" data-x="voice-key">Make a new link</button></div>
+      </div>
+      <div class="howto"><b>Make the shortcut (once per device, about 2 minutes)</b><ol>
+        <li>Copy the link above, then open the <b>Shortcuts</b> app and tap <b>+</b>.</li>
+        <li>Add <b>Ask for Input</b>. Set the question to <i>What would you like?</i></li>
+        <li>Add <b>URL Encode</b>. It picks up the answer automatically.</li>
+        <li>Add <b>Text</b>. Paste the link, then straight after it tap <b>URL Encoded Text</b> to add it on the end.</li>
+        <li>Add <b>Get Contents of URL</b>. It uses the Text above.</li>
+        <li>Add <b>Show Result</b>. Siri reads the board's answer out.</li>
+        <li>Rename the shortcut <b>Board</b>, so you can say "Hey Siri, Board".</li></ol>
+        <p><b>Things to say after "Hey Siri, Board":</b> "Pasta timer 10 minutes". "Timer for an hour and a half". "How long's left on the timer". "Cancel the timer". "Add milk to the list". "Remind us to book the dentist". "What's on tomorrow".</p>
+        <p>"Hey Siri, set a timer" without "Board" still works on the iPad, but it uses the iPad's own Clock app instead of showing on the board.</p></div>`}`;
   },
   security() {
     return `<h3>PIN and devices</h3><p class="lead">The parent PIN unlocks settings and approves chores. Each phone or iPad also needs it once to connect to the board.</p>
@@ -1113,6 +1261,17 @@ document.addEventListener("click", async (e) => {
       if (await act("pin.change", { newPin: a })) { PIN_LEN = a.length; setParent(a); toast("PIN changed"); $("#p1").value = $("#p2").value = ""; }
       break;
     }
+    case "voice-key": {
+      const fresh = !!VOICE;
+      if (await act("voice.key", {})) { toast(fresh ? "New link made. Update your shortcuts with it." : "Siri link made"); renderSettings(); }
+      break;
+    }
+    case "voice-copy": {
+      const v = $("#vlink");
+      try { await navigator.clipboard.writeText(v.value); toast("Link copied"); }
+      catch { v.select(); document.execCommand("copy"); toast("Link copied"); }
+      break;
+    }
     case "devices-forget":
       confirmSheet("Disconnect other devices?", "Every other phone and iPad will need the PIN to connect again. This one stays connected.", "Disconnect", async () => { if (await act("devices.forget")) toast("Other devices disconnected"); });
       break;
@@ -1161,6 +1320,15 @@ function renderIdleInfo() {
   let info = $(".idle-info", box);
   if (!info) { info = document.createElement("div"); info.className = "idle-info"; box.appendChild(info); }
   info.innerHTML = `<div class="idle-clock">${c.hm}<span class="ampm">${c.ampm}</span></div><div class="idle-date">${dateLong()}</div>${next}`;
+  // Running timers sit top-left, big enough to read across the kitchen
+  let tbox = $(".idle-timers", box);
+  const ts = liveTimers();
+  if (!ts.length) tbox?.remove();
+  else {
+    if (!tbox) { tbox = document.createElement("div"); tbox.className = "idle-timers"; box.appendChild(tbox); }
+    tbox.innerHTML = ts.map((t) => `<div class="it"><span>${esc(t.label || "Timer")}</span><b class="num">${fmtLeft(t.ends_at - nowMs())}</b></div>`).join("");
+  }
+  box.classList.toggle("has-timers", ts.length > 0);
 
   // Weather card: only redrawn when the forecast or the hour changes
   let card = $(".idle-weather", box);
@@ -1275,10 +1443,10 @@ setInterval(() => {
   if (idleOn) { const night = isNight(); if (night !== $("#idle").classList.contains("night")) { stopIdle(); startIdle(); } }
   if (parent.pin && Date.now() - lastTouch > PARENT_MINUTES * 60e3) { lockParent(); }
   // pick up a new version of the board when nobody's using it
-  if (idleOn && firstBuild && S.build !== firstBuild) location.reload();
+  if (idleOn && firstBuild && S.build !== firstBuild && !liveTimers().length) location.reload();
   // fresh page once a night keeps Safari tidy
   const d = new Date();
-  if (idleOn && d.getHours() === 3 && d.getMinutes() < 2 && performance.now() > 3 * 3600e3) location.reload();
+  if (idleOn && d.getHours() === 3 && d.getMinutes() < 2 && performance.now() > 3 * 3600e3 && !liveTimers().length) location.reload();
 }, 5000);
 
 /* Keep the screen awake where Safari allows it (iPadOS 18.4+ in Home Screen apps) */
@@ -1351,7 +1519,7 @@ boot().catch(() => {
   $("#app").innerHTML = `<div class="gate"><h1>Can't reach the board</h1><p>Check the internet connection. It'll try again in a minute.</p></div>`;
   setTimeout(() => location.reload(), 60000);
 });
-setInterval(() => { if (document.visibilityState === "visible" && !gateShown) refreshState(); }, 15000);
+setInterval(() => { if (document.visibilityState === "visible" && !gateShown) refreshState(); }, 8000);
 setInterval(() => !gateShown && refreshCalendar(), 10 * 60e3);
 setInterval(() => !gateShown && refreshWeather(), 15 * 60e3);
 setInterval(() => !gateShown && refreshPhotos(), 30 * 60e3);

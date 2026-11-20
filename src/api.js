@@ -2,7 +2,7 @@
 import { json, id, nowIso, getSettings, setMeta, localDay, addDays, DEFAULT_SETTINGS } from "./db.js";
 import { checkPin, setPin, validPin } from "./auth.js";
 
-export const BUILD = "2026-11-20.1";
+export const BUILD = "2026-11-20.2";
 
 const COLOURS = ["#F0648A", "#2E9BE6", "#F2B320", "#2DB56B", "#8C62E8", "#F5823A"];
 const str = (v, max = 120) => (typeof v === "string" ? v.trim().slice(0, max) : "");
@@ -10,6 +10,11 @@ const pence = (v) => {
   const n = Math.round(Number(v));
   return Number.isFinite(n) && n >= 0 && n <= 100000 ? n : null;
 };
+
+export async function startTimer(db, secs, label) {
+  await db.prepare("INSERT INTO timers (id, label, ends_at, duration, created, dismissed) VALUES (?, ?, ?, ?, ?, 0)")
+    .bind(id(), label || null, Date.now() + secs * 1000, secs, nowIso()).run();
+}
 
 function periodFor(chore, today, weekStart) {
   if (chore.repeat === "weekly") return "W" + weekStart;
@@ -24,7 +29,7 @@ export async function state(env, { parent = false } = {}) {
   const weekStart = addDays(today.iso, -today.weekday);
   const cutoff = new Date(Date.now() - 18 * 3600e3).toISOString();
 
-  const [people, chores, comps, owed, payouts, todos] = await db.batch([
+  const [people, chores, comps, owed, payouts, todos, timers] = await db.batch([
     db.prepare("SELECT id, name, colour, emoji, kid FROM people ORDER BY sort, name"),
     db.prepare("SELECT id, title, people, amount, repeat, days, sort FROM chores WHERE active = 1 ORDER BY sort, created"),
     db.prepare(
@@ -38,6 +43,8 @@ export async function state(env, { parent = false } = {}) {
     ),
     db.prepare("SELECT id, person_id, amount, created FROM payouts ORDER BY created DESC LIMIT 20"),
     db.prepare("SELECT id, text, person_id, done, created, done_at FROM todos WHERE done = 0 OR done_at > ? ORDER BY done, created").bind(cutoff),
+    // running timers, and finished ones nobody has stopped yet (they give up ringing after 15 minutes)
+    db.prepare("SELECT id, label, ends_at, duration FROM timers WHERE dismissed = 0 AND ends_at > ? ORDER BY ends_at").bind(Date.now() - 15 * 60e3),
   ]);
 
   const safeSettings = { ...settings, calendars: settings.calendars.map(({ url, ...c }) => (parent ? { url, ...c } : c)) };
@@ -56,11 +63,14 @@ export async function state(env, { parent = false } = {}) {
     owed: Object.fromEntries(owed.results.map((r) => [r.person_id, r.owed])),
     payouts: payouts.results,
     todos: todos.results,
+    timers: timers.results,
+    serverNow: Date.now(),
+    voice: parent ? (await db.prepare("SELECT value FROM meta WHERE key = 'voice_key'").first())?.value || null : undefined,
   };
 }
 
 // Actions anyone on a remembered device can do (kids included).
-const OPEN = new Set(["todo.add", "todo.toggle", "todo.delete", "chore.done", "chore.undo", "pin.check"]);
+const OPEN = new Set(["todo.add", "todo.toggle", "todo.delete", "chore.done", "chore.undo", "pin.check", "timer.start", "timer.add", "timer.stop"]);
 
 export async function handleDo(request, env) {
   const db = env.DB;
@@ -101,6 +111,35 @@ export async function handleDo(request, env) {
     case "todo.delete":
       await db.prepare("DELETE FROM todos WHERE id = ?").bind(str(b.id, 40)).run();
       break;
+
+    // ---- Kitchen timers
+    case "timer.start": {
+      const secs = Math.round(+b.seconds);
+      if (!(secs >= 5 && secs <= 24 * 3600)) return json({ error: "Pick a time between 5 seconds and 24 hours." }, 400);
+      await startTimer(db, secs, str(b.label, 40));
+      break;
+    }
+    case "timer.add": {
+      // Adds time to a timer; a finished one starts counting again from now
+      const secs = Math.round(+b.seconds) || 60;
+      const t = await db.prepare("SELECT ends_at FROM timers WHERE id = ?").bind(str(b.id, 40)).first();
+      if (t) {
+        const ends = Math.max(t.ends_at, Date.now()) + secs * 1000;
+        await db.prepare("UPDATE timers SET ends_at = ?, duration = duration + ?, dismissed = 0 WHERE id = ?").bind(ends, secs, str(b.id, 40)).run();
+      }
+      break;
+    }
+    case "timer.stop":
+      // Cancels a running timer or silences a finished one
+      await db.prepare("UPDATE timers SET dismissed = 1 WHERE id = ?").bind(str(b.id, 40)).run();
+      break;
+
+    // ---- Siri key (parents)
+    case "voice.key": {
+      const key = [...crypto.getRandomValues(new Uint8Array(18))].map((x) => x.toString(36).padStart(2, "0")).join("").slice(0, 24);
+      await setMeta(db, "voice_key", key);
+      break;
+    }
 
     // ---- Chores: kids tick, parents approve
     case "chore.done": {
