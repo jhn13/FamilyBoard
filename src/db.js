@@ -7,7 +7,7 @@ export const DEFAULT_SETTINGS = {
   location: { name: "Leeds", lat: 53.7997, lon: -1.5492 },
   calendars: [],        // [{ id, name, url, colour }]
   album: "",            // iCloud shared album public link
-  idleMinutes: 3,
+  idleMinutes: 1,
   nightStart: "22:00",
   nightEnd: "06:30",
   slideSeconds: 20,
@@ -55,6 +55,12 @@ export async function getSettings(db) {
   const raw = await getMeta(db, "settings");
   let s = {};
   try { s = raw ? JSON.parse(raw) : {}; } catch { s = {}; }
+  // v2 (Nov 2026): the screensaver default went from 3 minutes to 1. Boards still on the old default move across;
+  // anyone who picked their own time keeps it. Saved as v2 the next time settings are saved.
+  if (!(s.v >= 2)) {
+    if (s.idleMinutes === 3 || s.idleMinutes == null) s.idleMinutes = 1;
+    s.v = 2;
+  }
   return { ...DEFAULT_SETTINGS, ...s };
 }
 

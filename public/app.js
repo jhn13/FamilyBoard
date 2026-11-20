@@ -48,6 +48,27 @@ function wxIcon(code, day = 1) {
   return `<svg viewBox="0 0 24 24" ${s} aria-hidden="true">${body}</svg>`;
 }
 
+function wxText(code) {
+  const t = { 0: "Clear", 1: "Mainly clear", 2: "Partly cloudy", 3: "Cloudy", 45: "Fog", 48: "Freezing fog", 51: "Light drizzle", 53: "Drizzle", 55: "Heavy drizzle",
+    56: "Freezing drizzle", 57: "Freezing drizzle", 61: "Light rain", 63: "Rain", 65: "Heavy rain", 66: "Freezing rain", 67: "Freezing rain",
+    71: "Light snow", 73: "Snow", 75: "Heavy snow", 77: "Snow grains", 80: "Light showers", 81: "Showers", 82: "Heavy showers",
+    85: "Snow showers", 86: "Heavy snow showers", 95: "Thunderstorms", 96: "Thunder and hail", 99: "Thunder and hail" };
+  return t[code] || "";
+}
+// "2026-11-20T21:00" (the forecast's own local time) to "9pm"
+function hourLabel(t) { const h = +t.slice(11, 13), m = t.slice(14, 16); return `${h % 12 || 12}${m !== "00" ? ":" + m : ""}${h >= 12 ? "pm" : "am"}`; }
+// The next n hours of forecast, starting with the current hour
+function nextHours(n) {
+  const h = WX?.hourly;
+  if (!h?.time || !WX.current?.time) return [];
+  const nowHour = WX.current.time.slice(0, 13);
+  const i = Math.max(0, h.time.findIndex((t) => t.slice(0, 13) >= nowHour));
+  return h.time.slice(i, i + n).map((t, k) => ({
+    t, label: k === 0 ? "Now" : hourLabel(t), code: h.weather_code[i + k], day: h.is_day[i + k],
+    temp: Math.round(h.temperature_2m[i + k]), rain: h.precipitation_probability[i + k] ?? 0,
+  }));
+}
+
 /* ---------------- App state ---------------- */
 let S = null;                 // board state from the server
 let SP = null;                // parent-only settings (calendar links, album) when settings are open
@@ -134,9 +155,12 @@ async function refreshWeather() {
   if (!loc) return;
   try {
     const u = `https://api.open-meteo.com/v1/forecast?latitude=${loc.lat}&longitude=${loc.lon}` +
-      "&current=temperature_2m,weather_code,is_day&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=4";
+      "&current=temperature_2m,apparent_temperature,weather_code,is_day,wind_speed_10m,precipitation" +
+      "&hourly=temperature_2m,weather_code,precipitation_probability,is_day" +
+      "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset" +
+      "&wind_speed_unit=mph&timezone=auto&forecast_days=7";
     const r = await fetch(u);
-    if (r.ok) { WX = await r.json(); renderTop(); }
+    if (r.ok) { WX = await r.json(); WX._at = Date.now(); renderTop(); if (idleOn) renderIdleInfo(); if ($(".wxview")) renderWeather(); }
   } catch {}
 }
 function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } }
@@ -235,10 +259,10 @@ function renderTop() {
       <div class="wx-day">${new Date(t + "T12:00").toLocaleDateString("en-GB", { weekday: "short" })}
         ${wxIcon(WX.daily.weather_code[i + 1])}
         <b class="num">${Math.round(WX.daily.temperature_2m_max[i + 1])}°</b> <span class="num">${Math.round(WX.daily.temperature_2m_min[i + 1])}°</span></div>`).join("");
-    wx = `<div class="wx">
+    wx = `<button class="wx" data-act="weather" aria-label="Weather forecast">
       <div class="wx-now">${wxIcon(WX.current.weather_code, WX.current.is_day)}
         <div><div class="t num">${Math.round(WX.current.temperature_2m)}°</div><div class="place">${esc(S.settings.location?.name || "")}</div></div></div>
-      <div class="wx-days">${days}</div></div>`;
+      <div class="wx-days">${days}</div></button>`;
   }
   top.innerHTML = `
     <div class="clock" id="clock">${c.hm}<span class="ampm">${c.ampm}</span></div>
@@ -585,6 +609,76 @@ document.addEventListener("click", (e) => {
   }
 });
 
+/* ---------------- Weather view ---------------- */
+function openWeather() {
+  $(".wxview")?.remove();
+  const wrap = document.createElement("div");
+  wrap.className = "wxview";
+  wrap.setAttribute("role", "dialog");
+  wrap.setAttribute("aria-label", "Weather forecast");
+  document.body.appendChild(wrap);
+  wrap.addEventListener("click", (e) => { if (e.target.closest("[data-w=close]")) closeWeather(); });
+  renderWeather();
+  if (!WX || Date.now() - (WX._at || 0) > 10 * 60e3) refreshWeather();
+}
+function closeWeather() { $(".wxview")?.remove(); }
+
+function renderWeather() {
+  const wrap = $(".wxview");
+  if (!wrap) return;
+  const place = S?.settings?.location?.name || "your area";
+  if (!WX?.current) {
+    wrap.innerHTML = `<header class="m-head"><h2>Weather</h2><span class="m-gap"></span><button class="pill-btn" data-w="close">Back to board</button></header>
+      <div class="empty" style="padding:24px 0">Getting the forecast for ${esc(place)}…</div>`;
+    return;
+  }
+  const cur = WX.current, d = WX.daily;
+  const hours = nextHours(24);
+  const hrs = hours.map((h) => `<div class="wv-hour ${h.label === "Now" ? "now" : ""}"><span>${h.label}</span>${wxIcon(h.code, h.day)}<b class="num">${h.temp}°</b>
+      <i class="wv-rain" style="--r:${h.rain}%"><em></em></i><small class="num">${h.rain}%</small></div>`).join("");
+  // temperature line across the 24 hours
+  const ts = hours.map((h) => h.temp), tmin = Math.min(...ts), tmax = Math.max(...ts), span = Math.max(1, tmax - tmin);
+  const W = hours.length * 72, H = 60;
+  const pts = hours.map((h, i) => `${i * 72 + 36},${(8 + (1 - (h.temp - tmin) / span) * (H - 16)).toFixed(1)}`).join(" ");
+  const line = `<svg class="wv-line" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" aria-hidden="true"><polyline points="${pts}" fill="none" stroke="var(--yellow)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    ${hours.map((h, i) => `<circle cx="${i * 72 + 36}" cy="${(8 + (1 - (h.temp - tmin) / span) * (H - 16)).toFixed(1)}" r="3.5" fill="var(--yellow)"/>`).join("")}</svg>`;
+  const wkMin = Math.min(...d.temperature_2m_min), wkMax = Math.max(...d.temperature_2m_max), wkSpan = Math.max(1, wkMax - wkMin);
+  const days = d.time.map((t, i) => {
+    const name = i === 0 ? "Today" : new Date(t + "T12:00").toLocaleDateString("en-GB", { weekday: "long" });
+    const lo = d.temperature_2m_min[i], hi = d.temperature_2m_max[i];
+    const left = ((lo - wkMin) / wkSpan) * 100, width = Math.max(6, ((hi - lo) / wkSpan) * 100);
+    const rain = d.precipitation_probability_max[i] ?? 0;
+    return `<div class="wv-day"><span class="wv-name">${name}</span>${wxIcon(d.weather_code[i])}<span class="wv-text">${esc(wxText(d.weather_code[i]))}</span>
+      <span class="wv-pct ${rain >= 40 ? "wet" : ""}">${rain >= 10 ? rain + "%" : ""}</span>
+      <span class="wv-lo num">${Math.round(lo)}°</span><span class="wv-range"><i style="left:${left.toFixed(1)}%;width:${width.toFixed(1)}%"></i></span><span class="wv-hi num">${Math.round(hi)}°</span></div>`;
+  }).join("");
+  const sun = (t) => hourLabel(t);
+  const keepScroll = $(".wv-hours", wrap)?.scrollLeft || 0;
+  wrap.innerHTML = `
+    <header class="m-head"><h2>Weather in ${esc(place)}</h2><span class="m-gap"></span><button class="pill-btn" data-w="close">Back to board</button></header>
+    <div class="wv-body">
+      <section class="wv-now">
+        <div class="wv-big">${wxIcon(cur.weather_code, cur.is_day)}<span class="num">${Math.round(cur.temperature_2m)}°</span></div>
+        <div class="wv-cond">${esc(wxText(cur.weather_code))}</div>
+        <dl class="wv-facts">
+          <div><dt>Feels like</dt><dd class="num">${Math.round(cur.apparent_temperature)}°</dd></div>
+          <div><dt>High and low</dt><dd class="num">${Math.round(d.temperature_2m_max[0])}° / ${Math.round(d.temperature_2m_min[0])}°</dd></div>
+          <div><dt>Chance of rain</dt><dd class="num">${d.precipitation_probability_max[0] ?? 0}%</dd></div>
+          <div><dt>Wind</dt><dd class="num">${Math.round(cur.wind_speed_10m)} mph</dd></div>
+          <div><dt>Sunrise</dt><dd>${sun(d.sunrise[0])}</dd></div>
+          <div><dt>Sunset</dt><dd>${sun(d.sunset[0])}</dd></div>
+        </dl>
+      </section>
+      <section class="wv-right">
+        <h3>Next 24 hours</h3>
+        <div class="wv-hours"><div class="wv-strip">${line}<div class="wv-cells">${hrs}</div></div></div>
+        <h3>Next 7 days</h3>
+        <div class="wv-days">${days}</div>
+      </section>
+    </div>`;
+  $(".wv-hours", wrap).scrollLeft = keepScroll;
+}
+
 /* ---------------- Sheets ---------------- */
 function openSheet(html, { onClose } = {}) {
   const root = $("#sheet-root");
@@ -678,6 +772,7 @@ document.addEventListener("click", async (e) => {
   const a = b.dataset.act;
   if (a === "tab") { tab = b.dataset.tab; render(); return; }
   if (a === "month") { openMonth(b.dataset.day); return; }
+  if (a === "weather") { openWeather(); return; }
   if (a === "parent") { parentOn() ? (lockParent(), toast("Parent mode locked")) : askPin("Parent mode", "Ticks count straight away and you can approve chores for the next 5 minutes."); return; }
   if (a === "settings") { openSettings(b.dataset.tab); return; }
   if (a === "todo") { await act("todo.toggle", { id: b.dataset.id }); return; }
@@ -1061,16 +1156,31 @@ function nextEvent() {
 function renderIdleInfo() {
   const box = $("#idle");
   const c = clockParts();
-  const hi = WX?.daily?.temperature_2m_max?.[0], lo = WX?.daily?.temperature_2m_min?.[0];
-  const place = S?.settings?.location?.name || "";
-  const wx = WX?.current ? `<div class="idle-wx">${wxIcon(WX.current.weather_code, WX.current.is_day)}<span class="num">${Math.round(WX.current.temperature_2m)}°</span></div>
-    <div class="idle-wx-sub">${esc(place)}${hi != null ? `${place ? ", " : ""}high ${Math.round(hi)}°, low ${Math.round(lo)}°` : ""}</div>` : "";
   const n = nextEvent();
-  const next = n ? `<div class="idle-next"><b>Next</b>${esc(n.day)}${timeText(n.ev.s).t}${timeText(n.ev.s).ap} ${esc(n.ev.title)}</div>` : "";
+  const next = n ? `<div class="idle-next"><b>Next</b> ${esc(n.day)}${timeText(n.ev.s).t}${timeText(n.ev.s).ap} ${esc(n.ev.title)}</div>` : "";
   let info = $(".idle-info", box);
   if (!info) { info = document.createElement("div"); info.className = "idle-info"; box.appendChild(info); }
-  info.innerHTML = `<div><div class="idle-clock">${c.hm}<span class="ampm">${c.ampm}</span></div><div class="idle-date">${dateLong()}</div></div>
-    <div class="idle-side">${wx}${next}</div>`;
+  info.innerHTML = `<div class="idle-clock">${c.hm}<span class="ampm">${c.ampm}</span></div><div class="idle-date">${dateLong()}</div>${next}`;
+
+  // Weather card: only redrawn when the forecast or the hour changes
+  let card = $(".idle-weather", box);
+  const key = WX?.current ? WX.current.time + (S?.settings?.location?.name || "") : "";
+  if (!WX?.current) { card?.remove(); }
+  else if (!card || card.dataset.key !== key) {
+    if (!card) { card = document.createElement("div"); card.className = "idle-weather"; card.setAttribute("role", "button"); card.setAttribute("aria-label", "Open the weather forecast"); box.appendChild(card); }
+    card.dataset.key = key;
+    const cur = WX.current, d = WX.daily;
+    const hours = nextHours(7).slice(1).map((h) => `<div class="iw-hour"><span>${h.label}</span>${wxIcon(h.code, h.day)}<b class="num">${h.temp}°</b>
+      <i class="iw-rain" style="--r:${h.rain}%"><em></em></i><small>${h.rain >= 10 ? h.rain + "%" : ""}</small></div>`).join("");
+    card.innerHTML = `
+      <div class="iw-now">${wxIcon(cur.weather_code, cur.is_day)}<span class="iw-temp num">${Math.round(cur.temperature_2m)}°</span>
+        <div class="iw-desc"><b>${esc(wxText(cur.weather_code))}</b><span>Feels like ${Math.round(cur.apparent_temperature)}°</span>
+        <span>${esc(S?.settings?.location?.name || "")}</span></div></div>
+      <div class="iw-meta"><span>High ${Math.round(d.temperature_2m_max[0])}°</span><span>Low ${Math.round(d.temperature_2m_min[0])}°</span>
+        <span>Rain ${d.precipitation_probability_max[0] ?? 0}%</span><span>Wind ${Math.round(cur.wind_speed_10m)} mph</span></div>
+      <div class="iw-hours">${hours}</div>
+      <div class="iw-more">Tap for the full forecast</div>`;
+  }
   if (box.classList.contains("night")) {
     // drift the dim clock a little each minute
     const k = Math.floor(Date.now() / 60000);
@@ -1083,6 +1193,7 @@ function startIdle(preview = false) {
   idleOn = true;
   lockParent();
   closeMonth();
+  closeWeather();
   $$(".sheet-back").forEach((s) => s.remove());
   const box = $("#idle");
   const night = isNight() && !preview;
@@ -1146,7 +1257,12 @@ function wake() {
   if (idleOn) stopIdle();
   requestWakeLock();
 }
-$("#idle").addEventListener("pointerdown", (e) => { e.preventDefault(); wake(); });
+$("#idle").addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  const onWeather = e.target.closest(".idle-weather") && !$("#idle").classList.contains("night");
+  wake();
+  if (onWeather) openWeather();
+});
 ["pointerdown", "keydown"].forEach((t) => document.addEventListener(t, () => { lastTouch = Date.now(); requestWakeLock(); }, { passive: true }));
 
 // Screensaver timer, night switch-over, parent-mode timeout, updates
@@ -1237,6 +1353,6 @@ boot().catch(() => {
 });
 setInterval(() => { if (document.visibilityState === "visible" && !gateShown) refreshState(); }, 15000);
 setInterval(() => !gateShown && refreshCalendar(), 10 * 60e3);
-setInterval(() => !gateShown && refreshWeather(), 30 * 60e3);
+setInterval(() => !gateShown && refreshWeather(), 15 * 60e3);
 setInterval(() => !gateShown && refreshPhotos(), 30 * 60e3);
 setInterval(tickClock, 1000);
