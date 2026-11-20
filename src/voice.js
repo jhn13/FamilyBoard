@@ -120,7 +120,7 @@ export async function handleVoice(request, env) {
       if (!(settings.calendars || []).length) return reply("There's no calendar connected to the board yet.");
       const today = localDay(tz).iso;
       const dayIso = addDays(today, u.day);
-      const { events } = await loadEvents(settings, new Date(Date.now() - 864e5), new Date(Date.now() + 3 * 864e5));
+      const { events } = await loadEvents(settings, new Date(Date.now() - 864e5), new Date(Date.now() + 3 * 864e5), env);
       const now = Date.now();
       const items = events.filter((e) => {
         if (e.allDay) return e.start <= dayIso && (e.end || addDays(e.start, 1)) > dayIso;

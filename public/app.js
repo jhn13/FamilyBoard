@@ -331,10 +331,10 @@ function renderCalendar() {
   const col = $("#col-cal");
   if (!col) return;
   const now = new Date();
-  const hasCals = (S.settings.calendars || []).length > 0;
+  const hasCals = (S.settings.calendars || []).length > 0 || icloudCals().length > 0;
   let body = "";
   if (!hasCals) {
-    body = `<div class="empty">No calendars connected yet. <button data-act="settings" data-tab="calendars">Add your iCloud calendar</button></div>`;
+    body = `<div class="empty">No calendars connected yet. <button data-act="settings" data-tab="calendars">Connect iCloud</button></div>`;
   } else {
     const warn = (CAL.errors || []).map((e) => `<div class="cal-warn">${esc(e.name)}: ${esc(e.error)}</div>`).join("");
     body = warn + eventsByDay().map((g, i) => {
@@ -354,7 +354,7 @@ function renderCalendar() {
       return `<div class="day-group ${i === 0 ? "today" : ""}"><h3><button data-act="month" data-day="${g.iso}">${dayLabel(g.iso, i)}</button></h3>${items || `<div class="empty">Nothing on today</div>`}</div>`;
     }).join("");
   }
-  col.innerHTML = `<div class="col-head"><h2>Calendar</h2>${hasCals ? `<button class="pill-btn quiet" data-act="month">${I.cal} Month</button>` : ""}</div><div class="scroll">${body}</div>`;
+  col.innerHTML = `<div class="col-head"><h2>Calendar</h2><span class="head-btns">${hasCals ? `<button class="pill-btn quiet" data-act="month">${I.cal} Month</button>` : ""}${writableCals().length ? `<button class="pill-btn" data-act="event-add">${I.plus} Add</button>` : ""}</span></div><div class="scroll">${body}</div>`;
   col.classList.toggle("active", tab === "today");
 }
 
@@ -473,7 +473,7 @@ async function loadMonth(first, force = false) {
   const key = g.start + "_" + g.end;
   const hit = monthCache[key];
   if (hit && !force && Date.now() - hit.at < 10 * 60e3) return hit.data;
-  const data = await api(`/api/calendar?from=${g.start}&to=${g.end}`);
+  const data = await api(`/api/calendar?from=${g.start}&to=${g.end}${force ? "&fresh=1" : ""}`);
   monthCache[key] = { at: Date.now(), data };
   return data;
 }
@@ -572,7 +572,7 @@ function renderMonth(data) {
         <div class="m-dow">${DAY_NAMES.map((d) => `<span>${d}</span>`).join("")}</div>
         <div class="m-cells" style="--weeks:${g.weeks}">${cells}</div>
       </div>
-      <aside class="m-day" aria-live="polite"><h3>${selLabel}</h3><div class="scroll">${list}</div></aside>
+      <aside class="m-day" aria-live="polite"><div class="m-day-head"><h3>${selLabel}</h3>${writableCals().length ? `<button class="pill-btn" data-m="add">${I.plus} Add</button>` : ""}</div><div class="scroll">${list}</div></aside>
     </div>`;
   fitMonthCells();
 }
@@ -610,6 +610,7 @@ document.addEventListener("click", (e) => {
   if (!b) return;
   const m = b.dataset.m;
   if (m === "close") closeMonth();
+  if (m === "add") addEventSheet(monthSel);
   if (m === "prev") goMonth(-1);
   if (m === "next") goMonth(1);
   if (m === "this") { monthAt = firstOfMonth(isoDay(new Date())); monthSel = isoDay(new Date()); showMonth(); }
@@ -856,6 +857,95 @@ function askPin(title, lead) {
   });
 }
 
+/* ---------------- Adding calendar events ---------------- */
+const icloudCals = () => (S?.settings?.icloud?.cals || []).filter((c) => c.show);
+const writableCals = () => icloudCals().filter((c) => !c.readOnly);
+const lastCal = { get() { try { return localStorage.getItem("fb_cal"); } catch { return null; } }, set(v) { try { localStorage.setItem("fb_cal", v); } catch {} } };
+const hhmm = (mins) => `${pad2(Math.floor(mins / 60) % 24)}:${pad2(mins % 60)}`;
+const toMins = (t) => { const [h, m] = (t || "0:0").split(":").map(Number); return h * 60 + m; };
+
+function addEventSheet(day) {
+  const cals = writableCals();
+  if (!cals.length) return;
+  const today = isoDay(new Date());
+  const remembered = lastCal.get();
+  let calId = (cals.find((c) => c.id === remembered) || cals.find((c) => /family/i.test(c.name)) || cals[0]).id;
+  // next whole hour, for an hour
+  const n = new Date();
+  let startM = Math.min(23 * 60, (n.getHours() + 1) * 60);
+  if (day && day !== today) startM = 9 * 60;
+  let length = 60;
+  const quick = [[today, "Today"], [addDaysIso(today, 1), "Tomorrow"]];
+  const toSat = (5 - ((new Date().getDay() + 6) % 7) + 7) % 7;   // Monday is 0
+  if (toSat >= 2) quick.push([addDaysIso(today, toSat), "Saturday"]);
+  const date0 = day || today;
+
+  const { el, close } = openSheet(`
+    <h2>Add to the calendar</h2>
+    <p class="lead">It goes into iCloud, so it shows on the iPhones too.</p>
+    <label class="field"><span>What's happening?</span><input class="input" id="et" maxlength="200" placeholder="Swimming lesson" autocomplete="off"></label>
+    <div class="field"><span>Whose calendar?</span><div class="chips" id="ecal">${cals.map((c) =>
+      `<button class="chip cal-chip" style="--k:${esc(pc(c.colour))}" data-cal="${c.id}" aria-pressed="${c.id === calId}">${esc(c.name)}</button>`).join("")}</div></div>
+    <div class="field"><span>When?</span>
+      <div class="chips" id="eq">${quick.map(([iso, label]) => `<button class="chip" data-day="${iso}" aria-pressed="${iso === date0}">${label}</button>`).join("")}
+        <input class="input date-in" type="date" id="ed" value="${date0}" aria-label="Date"></div></div>
+    <label class="toggle ev-allday"><input type="checkbox" id="eall"> All day</label>
+    <div class="two" id="etimes">
+      <label class="field"><span>Starts</span><input class="input" type="time" id="es" value="${hhmm(startM)}" step="300"></label>
+      <label class="field"><span>Ends</span><input class="input" type="time" id="ee" value="${hhmm(Math.min(startM + length, 23 * 60 + 55))}" step="300"></label>
+    </div>
+    <label class="field" id="elast" hidden><span>Last day</span><input class="input" type="date" id="eld" value="${date0}"></label>
+    <label class="field"><span>Where? (optional)</span><input class="input" id="eloc" maxlength="200" placeholder="Rothwell Leisure Centre" autocomplete="off"></label>
+    <p class="err" id="eerr"></p>
+    <div class="sheet-actions"><button class="pill-btn quiet" data-x="cancel">Cancel</button><button class="pill-btn yellow" data-x="add">Add event</button></div>`);
+  el.classList.add("event-sheet");
+  setTimeout(() => $("#et", el).focus(), 50);
+  const dateIn = $("#ed", el), lastIn = $("#eld", el), startIn = $("#es", el), endIn = $("#ee", el), allIn = $("#eall", el);
+  const markQuick = () => $$("#eq [data-day]", el).forEach((b) => b.setAttribute("aria-pressed", b.dataset.day === dateIn.value));
+  const setDate = (v) => { dateIn.value = v; if (!lastIn.value || lastIn.value < v) lastIn.value = v; markQuick(); };
+  dateIn.addEventListener("change", () => setDate(dateIn.value));
+  // moving the start keeps the same length
+  startIn.addEventListener("change", () => { endIn.value = hhmm(Math.min(toMins(startIn.value) + length, 23 * 60 + 55)); });
+  endIn.addEventListener("change", () => { const d = toMins(endIn.value) - toMins(startIn.value); if (d > 0) length = d; });
+  allIn.addEventListener("change", () => { $("#etimes", el).hidden = allIn.checked; $("#elast", el).hidden = !allIn.checked; });
+
+  el.addEventListener("click", async (e) => {
+    const c = e.target.closest("[data-cal]");
+    if (c) { calId = c.dataset.cal; $$("[data-cal]", el).forEach((b) => b.setAttribute("aria-pressed", b === c)); return; }
+    const q = e.target.closest("#eq [data-day]");
+    if (q) { setDate(q.dataset.day); return; }
+    const x = e.target.closest("[data-x]")?.dataset.x;
+    if (x === "cancel") close();
+    if (x !== "add") return;
+    const err = $("#eerr", el);
+    const title = $("#et", el).value.trim();
+    if (!title) { err.textContent = "Say what's happening."; $("#et", el).focus(); return; }
+    if (!dateIn.value) { err.textContent = "Pick a date."; return; }
+    const body = { calendar: calId, title, date: dateIn.value, location: $("#eloc", el).value.trim(), allDay: allIn.checked };
+    if (allIn.checked) { if (lastIn.value > dateIn.value) body.endDate = lastIn.value; }
+    else {
+      body.start = startIn.value; body.end = endIn.value;
+      if (!body.start || !body.end) { err.textContent = "Pick a start and end time."; return; }
+      if (body.end <= body.start) { err.textContent = "The end time needs to be after the start."; return; }
+    }
+    const btn = $('[data-x="add"]', el);
+    btn.disabled = true; btn.textContent = "Adding…"; err.textContent = "";
+    try {
+      await api("/api/do", { action: "event.add", ...body });
+      lastCal.set(calId);
+      close();
+      toast(`Added to ${cals.find((k) => k.id === calId)?.name || "the calendar"}`);
+      for (const k in monthCache) delete monthCache[k];
+      await refreshCalendar(true);
+      if ($(".month")) { monthSel = body.date; monthAt = firstOfMonth(body.date); await loadMonth(monthAt, true).catch(() => {}); showMonth(); }
+    } catch (e2) {
+      err.textContent = e2.message;
+      btn.disabled = false; btn.textContent = "Add event";
+    }
+  });
+  $("#et", el).addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("#eloc", el).focus(); } });
+}
+
 function addTodoSheet() {
   let who = "";
   const people = S.people.map((p) => `<button class="chip" style="--k:${esc(pc(p.colour))}" data-who="${p.id}" aria-pressed="false">${esc(p.name)}</button>`).join("");
@@ -905,6 +995,7 @@ document.addEventListener("click", async (e) => {
   if (a === "todo") { await act("todo.toggle", { id: b.dataset.id }); return; }
   if (a === "todo-del") { await act("todo.delete", { id: b.dataset.id }); return; }
   if (a === "todo-add") { addTodoSheet(); return; }
+  if (a === "event-add") { addEventSheet(b.dataset.day); return; }
   if (a === "approve-all") {
     const ids = S.completions.filter((c) => c.status === "pending").map((c) => c.id);
     if (await act("chore.approve", { ids }, { needPin: true })) toast(ids.length > 1 ? "Chores approved" : "Chore approved");
@@ -1025,25 +1116,53 @@ const PANES = {
   },
   calendars() {
     const cals = SP?.calendars || [];
+    const ic = SP?.icloud;
     const errs = Object.fromEntries((CAL.errors || []).map((e) => [e.cal, e.error]));
-    const rows = cals.map((c, i) => `<div class="row"><span class="swatch" style="--k:${esc(pc(c.colour))}"></span>
-      <div class="grow"><div style="font-weight:700">${esc(c.name)}</div>${errs[c.id] ? `<div class="err">${esc(errs[c.id])}</div>` : `<div class="meta">Connected</div>`}</div>
+    let icloud;
+    if (!ic) {
+      icloud = `<div class="form-card" id="ic-form">
+        <div class="two"><label class="field"><span>Family Apple Account email</span><input class="input" data-f="user" type="email" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="family@icloud.com"></label>
+        <label class="field"><span>App-specific password</span><input class="input" data-f="password" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="xxxx-xxxx-xxxx-xxxx"></label></div>
+        <p class="err" id="icerr"></p>
+        <div class="sheet-actions" style="justify-content:flex-start"><button class="pill-btn yellow" data-x="ic-connect">Connect iCloud</button></div>
+      </div>
+      <div class="howto"><b>Setting it up (once)</b><ol>
+        <li>Make an app-specific password for the family account: go to account.apple.com, sign in as the family account, open Sign-In and Security, then App-Specific Passwords. Call it "Family board".</li>
+        <li>On your iPhone, open Calendar, tap Calendars, tap ⓘ next to your calendar, then Add Person. Add the family account's email. Make sure Allow Editing is on. Your partner does the same with theirs.</li>
+        <li>On this iPad, accept both invitations in the Calendar app.</li>
+        <li>Come back here and connect.</li></ol>
+        <p>The password is kept on the board's server and never shown again. To stop the board using it, delete it at account.apple.com.</p></div>`;
+    } else {
+      const rows = (ic.cals || []).map((c) => `<div class="row ic-row" data-ic="${c.id}">
+        <label class="toggle"><input type="checkbox" data-f="show" ${c.show ? "checked" : ""} aria-label="Show ${esc(c.name)} on the board"></label>
+        <span class="grow ic-name"><input class="input" data-f="name" value="${esc(c.name)}" maxlength="40" aria-label="Name on the board">
+          ${errs[c.id] ? `<span class="err">${esc(errs[c.id])}</span>` : c.readOnly ? `<span class="meta">View only: the board can't add to this one</span>` : ""}</span>
+        ${swatches(pc(c.colour))}</div>`).join("");
+      icloud = `<p class="lead">Signed in as <b>${esc(ic.user || "")}</b>. Tick the calendars to show on the board. Anyone can add events to them from the board, and they appear on the iPhones within a minute or so.</p>
+        ${rows || `<p class="lead">No calendars found yet. Accept the sharing invitations on this iPad, then check again.</p>`}
+        <p class="err" id="icerr"></p>
+        <div class="sheet-actions" style="justify-content:flex-start;flex-wrap:wrap">
+          ${rows ? `<button class="pill-btn yellow" data-x="ic-save">Save calendars</button>` : ""}
+          <button class="pill-btn quiet" data-x="ic-refresh">Check for new calendars</button>
+          <button class="pill-btn quiet danger-text" data-x="ic-off">Sign out of iCloud</button></div>`;
+    }
+    const linkRows = cals.map((c, i) => `<div class="row"><span class="swatch" style="--k:${esc(pc(c.colour))}"></span>
+      <div class="grow"><div style="font-weight:700">${esc(c.name)}</div>${errs[c.id] ? `<div class="err">${esc(errs[c.id])}</div>` : `<div class="meta">View only, from a share link</div>`}</div>
       <button class="small-btn danger" data-x="cal-del" data-i="${i}">Remove</button></div>`).join("");
-    return `<h3>Calendars</h3><p class="lead">The board shows your iCloud calendars using each calendar's public share link. It checks for changes every 10 minutes.</p>
-      ${rows}
-      <div class="form-card" id="cal-form">
-        <label class="field"><span>Calendar name</span><input class="input" data-f="name" maxlength="40" placeholder="Family"></label>
-        <label class="field"><span>Share link</span><input class="input" data-f="url" placeholder="webcal://p…-caldav.icloud.com/published/…" autocapitalize="off" autocorrect="off" spellcheck="false">
+    const linkForm = `<div class="form-card" id="cal-form">
+        <label class="field"><span>Calendar name</span><input class="input" data-f="name" maxlength="40" placeholder="School holidays"></label>
+        <label class="field"><span>Share link</span><input class="input" data-f="url" placeholder="webcal://…" autocapitalize="off" autocorrect="off" spellcheck="false">
           <small>Anyone with this link can see the calendar, so only paste it here.</small></label>
         <div class="field"><span>Colour</span>${swatches(COLOURS[cals.length % COLOURS.length])}</div>
         <p class="err" id="cerr"></p>
         <div class="sheet-actions" style="justify-content:flex-start"><button class="pill-btn yellow" data-x="cal-add">Add calendar</button></div>
-      </div>
-      <div class="howto"><b>Getting the link on an iPhone</b><ol>
-        <li>Open Calendar and tap Calendars at the bottom.</li>
-        <li>Tap the ⓘ next to the calendar you want.</li>
-        <li>Turn on Public Calendar, tap Share Link, then Copy.</li></ol>
-        <p>Apple's built-in "Family" calendar can't be shared this way. If you use it, make a normal shared calendar for the family instead.</p></div>`;
+      </div>`;
+    return `<h3>Calendars</h3>
+      <h4 class="sub">iCloud (two-way)</h4>${icloud}
+      <h4 class="sub">Other calendars (view only)</h4>
+      <p class="lead">For calendars the board only needs to show, like school term dates or bin days, paste a public calendar link.${ic && cals.length ? " If one of these is also ticked in iCloud above, remove it here so it doesn't show twice." : ""}</p>
+      ${linkRows}
+      <details class="more"><summary>Add a calendar link</summary>${linkForm}</details>`;
   },
   photos() {
     return `<h3>Photos</h3><p class="lead">When nobody has touched the board for a while, it shows a slideshow from an iCloud shared album with the time and weather on top.</p>
@@ -1207,6 +1326,45 @@ document.addEventListener("click", async (e) => {
       confirmSheet(`Pay ${k.name} ${money(amt)}?`, "Their owed total goes back to £0. Do this once you've handed the money over.", "Mark as paid", async () => { if (await act("payout", { person: k.id, amount: amt })) toast(`${money(amt)} paid to ${k.name}`); });
       break;
     }
+    case "ic-connect": {
+      const f = $("#ic-form");
+      const user = $('[data-f="user"]', f).value.trim(), password = $('[data-f="password"]', f).value.trim();
+      if (!user || !password) { $("#icerr").textContent = "Enter the family account's email and its app-specific password."; return; }
+      btn.disabled = true; btn.textContent = "Connecting…";
+      try {
+        const r = await api("/api/do", { action: "icloud.connect", user, password, pin: parent.pin });
+        applyState(r.state); SP = r.state.settings; renderSettings();
+        toast("iCloud connected");
+        for (const k in monthCache) delete monthCache[k];
+        refreshCalendar(true);
+      } catch (e2) {
+        btn.disabled = false; btn.textContent = "Connect iCloud";
+        $("#icerr").textContent = e2.message;
+      }
+      break;
+    }
+    case "ic-refresh": {
+      btn.disabled = true; btn.textContent = "Checking…";
+      try {
+        const r = await api("/api/do", { action: "icloud.refresh", pin: parent.pin });
+        applyState(r.state); SP = r.state.settings; renderSettings();
+        toast("Calendars checked");
+        refreshCalendar(true);
+      } catch (e2) { btn.disabled = false; btn.textContent = "Check for new calendars"; $("#icerr").textContent = e2.message; }
+      break;
+    }
+    case "ic-save": {
+      const list = $$(".ic-row").map((r) => ({ id: r.dataset.ic, show: $('[data-f="show"]', r).checked, name: $('[data-f="name"]', r).value.trim(), colour: colourIn(r) }));
+      const r = await act("icloud.calendars", { cals: list });
+      if (r) { SP = r.state.settings; renderSettings(); toast("Calendars saved"); for (const k in monthCache) delete monthCache[k]; refreshCalendar(true); }
+      break;
+    }
+    case "ic-off":
+      confirmSheet("Sign out of iCloud?", "The board stops showing your iCloud calendars and can't add events. Nothing is deleted from iCloud.", "Sign out", async () => {
+        const r = await act("icloud.disconnect");
+        if (r) { SP = r.state.settings; renderSettings(); toast("Signed out of iCloud"); refreshCalendar(true); }
+      });
+      break;
     case "cal-add": {
       const f = $("#cal-form");
       const url = $('[data-f="url"]', f).value.trim();

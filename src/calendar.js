@@ -1,6 +1,7 @@
-// GET /api/calendar: events for the next three weeks from each published iCloud calendar link.
+// GET /api/calendar: events from the signed-in iCloud calendars and any published calendar links.
 import ICAL from "ical.js";
 import { json, getSettings } from "./db.js";
+import { icloudEvents } from "./caldav.js";
 
 const DAYS_AHEAD = 21;
 const CACHE_SECONDS = 600;
@@ -114,11 +115,14 @@ async function fetchIcs(url) {
 }
 
 // Events from every connected calendar between two dates, sorted. Used by the board and by Siri.
-export async function loadEvents(settings, from, to) {
+export async function loadEvents(settings, from, to, env) {
   const cals = settings.calendars || [];
-  const results = await Promise.allSettled(cals.map(async (c) => eventsFromIcs(await fetchIcs(c.url), c, from, to, settings.tz)));
-  const events = [];
-  const errors = [];
+  const [results, ic] = await Promise.all([
+    Promise.allSettled(cals.map(async (c) => eventsFromIcs(await fetchIcs(c.url), c, from, to, settings.tz))),
+    icloudEvents(env, settings, from, to),
+  ]);
+  const events = [...ic.events];
+  const errors = [...ic.errors];
   results.forEach((r, i) => {
     if (r.status === "fulfilled") events.push(...r.value);
     else errors.push({ cal: cals[i].id, name: cals[i].name, error: "Couldn't load this calendar. Check its share link is still switched on." });
@@ -129,7 +133,7 @@ export async function loadEvents(settings, from, to) {
 
 export async function handleCalendar(request, env, ctx) {
   const settings = await getSettings(env.DB);
-  const cals = settings.calendars || [];
+  const cals = [...(settings.icloud?.cals || []).filter((c) => c.show), ...(settings.calendars || [])];
   if (!cals.length) return json({ events: [], calendars: [], errors: [] });
 
   // Optional ?from=YYYY-MM-DD&to=YYYY-MM-DD (the month view), otherwise yesterday to three weeks ahead.
@@ -157,7 +161,7 @@ export async function handleCalendar(request, env, ctx) {
     if (hit) return new Response(hit.body, { headers: { "content-type": "application/json", "cache-control": "no-store" } });
   }
 
-  const { events, errors } = await loadEvents(settings, from, to);
+  const { events, errors } = await loadEvents(settings, from, to, env);
   const body = JSON.stringify({
     events,
     calendars: cals.map(({ id, name, colour }) => ({ id, name, colour })),

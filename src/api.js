@@ -1,8 +1,9 @@
 // /api/state (everything the board shows) and /api/do (every change).
-import { json, id, nowIso, getSettings, setMeta, localDay, addDays, DEFAULT_SETTINGS } from "./db.js";
+import { json, id, nowIso, getSettings, getMeta, setMeta, localDay, addDays, DEFAULT_SETTINGS } from "./db.js";
 import { checkPin, setPin, validPin } from "./auth.js";
+import { discover, addEvent } from "./caldav.js";
 
-export const BUILD = "2026-11-20.2";
+export const BUILD = "2026-11-20.3";
 
 const COLOURS = ["#F0648A", "#2E9BE6", "#F2B320", "#2DB56B", "#8C62E8", "#F5823A"];
 const str = (v, max = 120) => (typeof v === "string" ? v.trim().slice(0, max) : "");
@@ -48,6 +49,10 @@ export async function state(env, { parent = false } = {}) {
   ]);
 
   const safeSettings = { ...settings, calendars: settings.calendars.map(({ url, ...c }) => (parent ? { url, ...c } : c)) };
+  if (settings.icloud) {
+    const { user, cals, connected } = settings.icloud;
+    safeSettings.icloud = { connected, user: parent ? user : undefined, cals: (cals || []).map(({ url, ...c }) => c) };
+  }
   safeSettings.hasAlbum = !!settings.album;
   if (!parent) delete safeSettings.album;
 
@@ -69,8 +74,16 @@ export async function state(env, { parent = false } = {}) {
   };
 }
 
+// Keeps each calendar's board name, colour and on/off choice when iCloud is checked again.
+function mergeCals(found, old) {
+  return found.map((c) => {
+    const o = old.get(c.id);
+    return o ? { ...c, name: o.name, colour: o.colour, show: o.show } : { ...c, show: true };
+  });
+}
+
 // Actions anyone on a remembered device can do (kids included).
-const OPEN = new Set(["todo.add", "todo.toggle", "todo.delete", "chore.done", "chore.undo", "pin.check", "timer.start", "timer.add", "timer.stop"]);
+const OPEN = new Set(["todo.add", "todo.toggle", "todo.delete", "chore.done", "chore.undo", "pin.check", "timer.start", "timer.add", "timer.stop", "event.add"]);
 
 export async function handleDo(request, env) {
   const db = env.DB;
@@ -133,6 +146,77 @@ export async function handleDo(request, env) {
       // Cancels a running timer or silences a finished one
       await db.prepare("UPDATE timers SET dismissed = 1 WHERE id = ?").bind(str(b.id, 40)).run();
       break;
+
+    // ---- Calendar events (anyone can add; they go straight into iCloud)
+    case "event.add": {
+      const cal = (settings.icloud?.cals || []).find((c) => c.id === str(b.calendar, 40));
+      if (!cal) return json({ error: "Pick a calendar." }, 400);
+      if (cal.readOnly) return json({ error: `"${cal.name}" is view-only for the board.` }, 400);
+      const title = str(b.title, 200);
+      const isDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v || "") && !isNaN(Date.parse(v + "T00:00:00Z"));
+      const isTime = (v) => /^([01]\d|2[0-3]):[0-5]\d$/.test(v || "");
+      if (!title) return json({ error: "Say what's happening." }, 400);
+      if (!isDate(b.date)) return json({ error: "Pick a date." }, 400);
+      const endDate = isDate(b.endDate) && b.endDate >= b.date ? b.endDate : null;
+      const ev = { title, location: str(b.location, 200), notes: str(b.notes, 1000), date: b.date, endDate, allDay: !!b.allDay };
+      if (!ev.allDay) {
+        if (!isTime(b.start) || !isTime(b.end)) return json({ error: "Pick a start and end time." }, 400);
+        if (!endDate && b.end <= b.start) return json({ error: "The end time needs to be after the start." }, 400);
+        ev.start = b.start;
+        ev.end = b.end;
+      }
+      try { await addEvent(env, settings, cal, ev); }
+      catch (e) { return json({ error: e.message }, 502); }
+      break;
+    }
+
+    // ---- iCloud sign-in (parents)
+    case "icloud.connect": {
+      const user = str(b.user, 120).toLowerCase();
+      const password = String(b.password || "").replace(/\s+/g, "");
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(user)) return json({ error: "Enter the Apple Account email." }, 400);
+      if (!password) return json({ error: "Enter the app-specific password." }, 400);
+      let found;
+      try { found = await discover(env, user, password); }
+      catch (e) { return json({ error: e.message }, 400); }
+      const old = new Map((settings.icloud?.cals || []).map((c) => [c.id, c]));
+      await setMeta(db, "icloud_pw", password);
+      const next = { ...settings, icloud: { user, connected: nowIso(), cals: mergeCals(found, old) } };
+      await setMeta(db, "settings", JSON.stringify(next));
+      break;
+    }
+    case "icloud.refresh": {
+      const password = await getMeta(db, "icloud_pw");
+      if (!settings.icloud?.user || !password) return json({ error: "Sign in to iCloud first." }, 400);
+      let found;
+      try { found = await discover(env, settings.icloud.user, password); }
+      catch (e) { return json({ error: e.message }, 400); }
+      const old = new Map((settings.icloud.cals || []).map((c) => [c.id, c]));
+      await setMeta(db, "settings", JSON.stringify({ ...settings, icloud: { ...settings.icloud, cals: mergeCals(found, old) } }));
+      break;
+    }
+    case "icloud.calendars": {
+      // Which iCloud calendars show on the board, their colours and their order
+      const want = Array.isArray(b.cals) ? b.cals : [];
+      const byId = new Map((settings.icloud?.cals || []).map((c) => [c.id, c]));
+      const cals = [];
+      for (const w of want) {
+        const c = byId.get(str(w.id, 40));
+        if (!c) continue;
+        byId.delete(c.id);
+        cals.push({ ...c, show: !!w.show, name: str(w.name, 40) || c.name, colour: /^#[0-9a-fA-F]{6}$/.test(w.colour || "") ? w.colour.toUpperCase() : c.colour });
+      }
+      cals.push(...byId.values());
+      await setMeta(db, "settings", JSON.stringify({ ...settings, icloud: { ...settings.icloud, cals } }));
+      break;
+    }
+    case "icloud.disconnect": {
+      const next = { ...settings };
+      delete next.icloud;
+      await db.prepare("DELETE FROM meta WHERE key = 'icloud_pw'").run();
+      await setMeta(db, "settings", JSON.stringify(next));
+      break;
+    }
 
     // ---- Siri key (parents)
     case "voice.key": {
